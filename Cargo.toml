@@ -7,7 +7,7 @@ edition = "2021"
 name = "lib"
 
 [dependencies]
-zo-abi = { git = "ssh://git@github.com/01protocol/zo-abi.git" }
+zo-abi = { path = "./abi" }
 anchor-client = "0.19.0"
 solana-rpc = "1.9"
 solana-account-decoder = "1.9"

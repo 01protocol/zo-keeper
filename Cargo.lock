@@ -6218,7 +6218,6 @@ dependencies = [
 [[package]]
 name = "zo-abi"
 version = "0.1.0"
-source = "git+ssh://git@github.com/01protocol/zo-abi.git#896cad18e29960b625cd718ba667a194396178cc"
 dependencies = [
  "anchor-lang",
 ]
