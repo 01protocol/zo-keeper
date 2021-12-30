@@ -22,14 +22,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    Keeper {},
-    Listener {},
     Crank {},
+    Listener {},
+    ConsumeEvents {},
     Liquidator {},
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), lib::error::Error> {
     dotenv::dotenv().ok();
     tracing_subscriber::fmt::init();
 
@@ -59,7 +59,10 @@ async fn main() {
         panic!("Invalid state signer nonce");
     }
 
+    let (tx, rx) = tokio::sync::mpsc::channel(128);
+
     let app_state = lib::AppState {
+        err_tx: tx,
         cluster,
         client,
         program,
@@ -73,14 +76,18 @@ async fn main() {
 
     let app_state: &'static _ = Box::leak(Box::new(app_state));
 
+    let err_handle = tokio::spawn(async move {
+        lib::error::error_handler(rx).await;
+    });
+
     match &args.command {
-        Command::Keeper {} => {
-            lib::keeper::run(app_state).await;
-        }
-        Command::Listener {} => {
-            lib::listener::run(app_state).await;
-        },
-        Command::Crank {} => todo!(),
+        Command::Crank {} => lib::crank::run(app_state).await?,
+        Command::Listener {} => lib::listener::run(app_state).await?,
+        Command::ConsumeEvents {} => todo!(),
         Command::Liquidator {} => todo!(),
-    }
+    };
+
+    let _ = err_handle.await;
+
+    Ok(())
 }
