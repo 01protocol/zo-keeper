@@ -1,6 +1,12 @@
+mod events;
+
 use crate::{error::Error, AppState};
-use anchor_client::solana_client::rpc_config::{
-    RpcAccountInfoConfig, RpcTransactionLogsConfig, RpcTransactionLogsFilter,
+use anchor_client::{
+    solana_client::rpc_config::{
+        RpcAccountInfoConfig, RpcTransactionLogsConfig,
+        RpcTransactionLogsFilter,
+    },
+    EventContext,
 };
 use futures::StreamExt;
 use jsonrpc_core_client::transports::ws;
@@ -24,6 +30,7 @@ pub async fn run(st: &'static AppState) -> Result<(), Error> {
         listen_oracle_failures(st),
         listen_event_queue(st, db_client),
         poll_update_funding(st, db_client),
+        listen_rpnl(st, db_client),
     );
 
     Ok(())
@@ -73,6 +80,88 @@ async fn listen_oracle_failures(st: &'static AppState) {
                         crate::error::Error::OraclesSkipped(skipped),
                     )
                     .await;
+                }
+            }
+        }
+    }
+}
+
+/// Listens to realized pnl events for users
+async fn listen_rpnl(
+    st: &'static AppState,
+    db_client: &'static mongodb::Client,
+) {
+    let span = error_span!("realized pnl");
+
+    loop {
+        let sub = ws::try_connect::<RpcSolPubSubClient>(st.cluster.ws_url())
+            .unwrap()
+            .await
+            .and_then(|p| {
+                p.logs_subscribe(
+                    RpcTransactionLogsFilter::Mentions(vec![
+                        zo_abi::ID.to_string()
+                    ]),
+                    Some(RpcTransactionLogsConfig { commitment: None }),
+                )
+            });
+
+        let mut sub = match sub {
+            Ok(x) => x,
+            Err(e) => {
+                st.error(span.clone(), e).await;
+                continue;
+            }
+        };
+
+        while let Some(resp) = sub.next().await {
+            if let Ok(resp) = resp {
+                if resp.value.err.is_some() {
+                    continue;
+                }
+
+                let ctx = EventContext {
+                    signature: resp.value.signature.parse().unwrap(),
+                    slot: resp.context.slot,
+                };
+
+                let events: Vec<zo_abi::events::RealizedPnlLog> =
+                    self::events::parse(resp.value.logs.into_iter(), st).await;
+
+                if events.is_empty() {
+                    continue;
+                }
+
+                let mut docs: Vec<_> = Vec::new();
+
+                for e in events.into_iter() {
+                    let doc = st
+                        .load_dex_markets()
+                        .find(|(_symbol, m)| m.own_address == e.market_key)
+                        .map(|(symbol, _m)| crate::db::RealizedPnl {
+                            symbol,
+                            sig: ctx.signature.to_string(),
+                            slot: ctx.slot as i64,
+                            margin: e.margin.to_string(),
+                            is_long: e.is_long,
+                            pnl: e.pnl,
+                            qty_paid: e.qty_paid,
+                            qty_received: e.qty_received,
+                        })
+                        .unwrap();
+                    docs.push(doc);
+                }
+
+                if docs.is_empty() {
+                    span.in_scope(|| info!("nothing to update"));
+                } else {
+                    let res =
+                        crate::db::RealizedPnl::update(db_client, &docs).await;
+
+                    if let Err(e) = res {
+                        st.error(span.clone(), e).await;
+                        continue;
+                    }
                 }
             }
         }

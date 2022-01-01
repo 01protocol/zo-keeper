@@ -10,9 +10,15 @@ pub enum Error {
     #[error("{0}")]
     JsonRpc(#[from] jsonrpc_core_client::RpcError),
     #[error("{0}")]
+    TransactionError(
+        #[from] anchor_client::solana_sdk::transaction::TransactionError,
+    ),
+    #[error("{0}")]
     Db(#[from] mongodb::error::Error),
     #[error("{0}")]
     Var(#[from] std::env::VarError),
+    #[error("Error decoding base64 log: {}", .0)]
+    DecodingError(String),
 }
 
 pub type ErrorContext = (Span, Error);

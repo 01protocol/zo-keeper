@@ -6238,6 +6238,7 @@ dependencies = [
  "serde",
  "solana-account-decoder",
  "solana-rpc",
+ "solana-transaction-status",
  "thiserror",
  "tokio",
  "tracing",

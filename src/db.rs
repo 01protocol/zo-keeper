@@ -33,6 +33,21 @@ pub struct Funding {
     pub last_updated: i64,
 }
 
+#[derive(Serialize)]
+pub struct RealizedPnl {
+    pub symbol: String,
+    pub sig: String,
+    pub slot: i64,
+    pub margin: String,
+    #[serde(rename = "isLong")]
+    pub is_long: bool,
+    pub pnl: i64,
+    #[serde(rename = "qtyPaid")]
+    pub qty_paid: i64,
+    #[serde(rename = "qtyReceived")]
+    pub qty_received: i64,
+}
+
 impl Trade {
     pub async fn update(
         client: &MongoClient,
@@ -232,6 +247,47 @@ impl Funding {
         coll.create_index(
             IndexModel::builder()
                 .keys(doc! { "symbol": 1, "lastUpdated": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            None,
+        )
+        .await?;
+
+        let res = coll.insert_many(xs, None).await;
+
+        // Similar to trades collection, we want to omit any
+        // duplicate key errors, which has error code 11000.
+        if let Err(ref error) = res {
+            match *error.kind {
+                ErrorKind::BulkWrite(BulkWriteFailure {
+                    write_errors: Some(ref es),
+                    ..
+                }) if es.iter().all(|e| e.code == 11000) => {}
+
+                _ => {
+                    res?;
+                }
+            };
+        }
+
+        Ok(())
+    }
+}
+
+impl RealizedPnl {
+    pub async fn update(
+        c: &mongodb::Client,
+        xs: &[Self],
+    ) -> Result<(), MongoError> {
+        if xs.is_empty() {
+            return Ok(());
+        }
+
+        let coll = c.database("main").collection::<Self>("rpnl-tmp");
+
+        coll.create_index(
+            IndexModel::builder()
+                .keys(doc! { "symbol": 1, "slot": 1, "sig": 1 })
                 .options(IndexOptions::builder().unique(true).build())
                 .build(),
             None,

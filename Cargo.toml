@@ -11,6 +11,7 @@ zo-abi = { path = "./abi" }
 anchor-client = "0.19.0"
 solana-rpc = "1.9"
 solana-account-decoder = "1.9"
+solana-transaction-status = "1.9.2"
 jsonrpc-core-client = { version = "18", features = ["ws"] }
 dotenv = "0.15"
 clap = { version = "3.0.0-rc.8", features = ["derive", "env"] }
