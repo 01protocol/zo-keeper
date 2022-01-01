@@ -76,15 +76,13 @@ async fn main() -> Result<(), lib::error::Error> {
 
     let app_state: &'static _ = Box::leak(Box::new(app_state));
 
-    let err_handle = tokio::spawn(async move {
-        lib::error::error_handler(rx).await;
-    });
+    let err_handle = tokio::spawn(lib::error::error_handler(rx));
 
     match &args.command {
         Command::Crank {} => lib::crank::run(app_state).await?,
         Command::Listener {} => lib::listener::run(app_state).await?,
-        Command::ConsumeEvents {} => todo!(),
-        Command::Liquidator {} => todo!(),
+        Command::ConsumeEvents {} => lib::consumer::run(app_state).await?,
+        Command::Liquidator {} => lib::liquidator::run(app_state).await?,
     };
 
     let _ = err_handle.await;
