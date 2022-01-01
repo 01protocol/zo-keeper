@@ -2,7 +2,7 @@ use crate::{error::Error, AppState};
 use anchor_client::anchor_lang::prelude::AccountMeta;
 use std::{cmp::min, env, str::FromStr, time::Duration};
 use tokio::time::Interval;
-use tracing::{info, info_span};
+use tracing::{info, error_span};
 
 pub async fn run(st: &'static AppState) -> Result<(), Error> {
     let cache_oracle_interval =
@@ -73,7 +73,7 @@ async fn cache_oracle_loop(st: &'static AppState, mut interval: Interval) {
             };
 
             let span =
-                info_span!("cache_oracle", symbols = symbols_log.as_str());
+                error_span!("cache_oracle", symbols = symbols_log.as_str());
 
             match res {
                 Ok(sg) => span.in_scope(|| info!("{}", sg)),
@@ -115,7 +115,7 @@ async fn cache_interest_loop(
                     };
 
                     let span =
-                        info_span!("cache_interest", from = start, to = end);
+                        error_span!("cache_interest", from = start, to = end);
 
                     match res {
                         Ok(sg) => span.in_scope(|| info!("{}", sg)),
@@ -156,7 +156,7 @@ async fn update_funding_loop(st: &'static AppState, mut interval: Interval) {
                     };
 
                     let span =
-                        info_span!("update_funding", symbol = symbol.as_str());
+                        error_span!("update_funding", symbol = symbol.as_str());
 
                     match res {
                         Ok(sg) => span.in_scope(|| info!("{}", sg)),

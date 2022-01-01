@@ -19,7 +19,14 @@ pub type ErrorContext = (Span, Error);
 
 pub async fn error_handler(mut rx: Receiver<ErrorContext>) {
     while let Some((span, e)) = rx.recv().await {
-        let _s = span.enter();
-        error!("{}", e);
+        // Filter out benign errors.
+        match e {
+            _ => {
+                span.in_scope(|| {
+                    error!("{}", e);
+                    error!("{:?}", e);
+                });
+            }
+        };
     }
 }

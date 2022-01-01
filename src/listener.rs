@@ -12,7 +12,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
-use tracing::{info, info_span};
+use tracing::{info, error_span};
 
 pub async fn run(st: &'static AppState) -> Result<(), Error> {
     let db_client =
@@ -30,7 +30,7 @@ pub async fn run(st: &'static AppState) -> Result<(), Error> {
 }
 
 async fn listen_oracle_failures(st: &'static AppState) {
-    let span = info_span!("oracle_failures");
+    let span = error_span!("oracle_failures");
 
     let re = regex::Regex::new(r"NOOPS/CACHE_ORACLE/SYM/(\w+)").unwrap();
 
@@ -91,7 +91,7 @@ async fn listen_event_queue(
             let event_q = dex_market.event_q.to_string();
 
             tokio::spawn(async move {
-                let span = info_span!("event_queue", symbol = symbol.as_str());
+                let span = error_span!("event_queue", symbol = symbol.as_str());
 
                 loop {
                     let event_q = event_q.clone();
@@ -164,7 +164,7 @@ async fn poll_update_funding(
     st: &'static AppState,
     db_client: &'static mongodb::Client,
 ) {
-    let span = info_span!("update_funding");
+    let span = error_span!("update_funding");
 
     let mut interval = tokio::time::interval(Duration::from_secs(10));
 
