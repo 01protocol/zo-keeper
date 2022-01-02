@@ -103,9 +103,10 @@ async fn consumer_loop(
         span.in_scope(|| info!("event queue length: {}", events.len()));
 
         // Sorted, unique, and capped list of control pubkeys.
-        let mut used_control = BTreeSet::new();
+        // Pubkeys are sorted by their [u64; 4] representation.
+        let mut used_control: BTreeSet<[u64; 4]> = BTreeSet::new();
 
-        for control in events.iter().map(|e| e.control) {
+        for control in events.iter().map(|e| bytemuck::cast(e.control)) {
             used_control.insert(control);
             if used_control.len() >= to_consume {
                 break;
@@ -116,19 +117,19 @@ async fn consumer_loop(
         let mut orders_accounts = Vec::with_capacity(used_control.len());
         let mut margin_accounts = Vec::with_capacity(used_control.len());
 
-        for control in used_control.iter() {
+        for control in used_control.into_iter().map(bytemuck::cast) {
             let (oo, margin) =
-                accounts_table.entry(*control).or_insert_with(|| {
+                accounts_table.entry(control).or_insert_with(|| {
                     (
-                        open_orders_pda(control, &market.own_address),
+                        open_orders_pda(&control, &market.own_address),
                         margin_pda(
-                            &st.program.account(*control).unwrap(),
+                            &st.program.account(control).unwrap(),
                             &st.zo_state_pubkey,
                         ),
                     )
                 });
 
-            control_accounts.push(AccountMeta::new(*control, false));
+            control_accounts.push(AccountMeta::new(control, false));
             orders_accounts.push(AccountMeta::new(*oo, false));
             margin_accounts.push(AccountMeta::new(*margin, false));
         }
