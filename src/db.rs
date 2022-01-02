@@ -48,6 +48,46 @@ pub struct RealizedPnl {
     pub qty_received: i64,
 }
 
+#[derive(Serialize)]
+pub struct Liquidation {
+    pub sig: String,
+    pub slot: i64,
+    #[serde(rename = "liquidationEvent")]
+    pub liquidation_event: String,
+    #[serde(rename = "baseSymbol")]
+    pub base_symbol: String,
+    #[serde(rename = "quoteSymbol")]
+    pub quote_symbol: String,
+    #[serde(rename = "liqorMargin")]
+    pub liqor_margin: String,
+    #[serde(rename = "liqeeMargin")]
+    pub liqee_margin: String,
+    #[serde(rename = "assetsToLiqor")]
+    pub assets_to_liqor: i64,
+    #[serde(rename = "quoteToLiqor")]
+    pub quote_to_liqor: i64,
+}
+
+#[derive(Serialize)]
+pub struct Bankruptcy {
+    pub sig: String,
+    pub slot: i64,
+    #[serde(rename = "baseSymbol")]
+    pub base_symbol: String,
+    #[serde(rename = "liqorMargin")]
+    pub liqor_margin: String,
+    #[serde(rename = "liqeeMargin")]
+    pub liqee_margin: String,
+    #[serde(rename = "assetsToLiqor")]
+    pub assets_to_liqor: i64,
+    #[serde(rename = "quoteToLiqor")]
+    pub quote_to_liqor: i64,
+    #[serde(rename = "insuranceLoss")]
+    pub insurance_loss: i64,
+    #[serde(rename = "socializedLoss")]
+    pub socialized_loss: i64,
+}
+
 impl Trade {
     pub async fn update(
         client: &MongoClient,
@@ -170,9 +210,7 @@ impl Trade {
         if trades.is_empty() {
             info!(
                 "{}: no trades from {} to {} ",
-                symbol,
-                last_seq_num,
-                new_seq_num
+                symbol, last_seq_num, new_seq_num
             );
         } else {
             let res = trades_coll
@@ -198,9 +236,7 @@ impl Trade {
                     }) if es.iter().all(|e| e.code == 11000) => {
                         info!(
                             "{}: events from {} to {} duplicate",
-                            symbol,
-                            last_seq_num,
-                            new_seq_num
+                            symbol, last_seq_num, new_seq_num
                         );
                     }
 
@@ -212,9 +248,7 @@ impl Trade {
 
             info!(
                 "{}: inserted events from {} to {}",
-                symbol,
-                last_seq_num,
-                new_seq_num
+                symbol, last_seq_num, new_seq_num
             );
         }
 
@@ -287,7 +321,89 @@ impl RealizedPnl {
 
         coll.create_index(
             IndexModel::builder()
-                .keys(doc! { "symbol": 1, "slot": 1, "sig": 1 })
+                .keys(doc! { "symbol": 1, "sig": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            None,
+        )
+        .await?;
+
+        let res = coll.insert_many(xs, None).await;
+
+        // Similar to trades collection, we want to omit any
+        // duplicate key errors, which has error code 11000.
+        if let Err(ref error) = res {
+            match *error.kind {
+                ErrorKind::BulkWrite(BulkWriteFailure {
+                    write_errors: Some(ref es),
+                    ..
+                }) if es.iter().all(|e| e.code == 11000) => {}
+
+                _ => {
+                    res?;
+                }
+            };
+        }
+
+        Ok(())
+    }
+}
+
+impl Liquidation {
+    pub async fn update(
+        c: &mongodb::Client,
+        xs: &[Self],
+    ) -> Result<(), MongoError> {
+        if xs.is_empty() {
+            return Ok(());
+        }
+
+        let coll = c.database("main").collection::<Self>("liq-tmp");
+
+        coll.create_index(
+            IndexModel::builder()
+                .keys(doc! { "sig": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            None,
+        )
+        .await?;
+
+        let res = coll.insert_many(xs, None).await;
+
+        // Similar to trades collection, we want to omit any
+        // duplicate key errors, which has error code 11000.
+        if let Err(ref error) = res {
+            match *error.kind {
+                ErrorKind::BulkWrite(BulkWriteFailure {
+                    write_errors: Some(ref es),
+                    ..
+                }) if es.iter().all(|e| e.code == 11000) => {}
+
+                _ => {
+                    res?;
+                }
+            };
+        }
+
+        Ok(())
+    }
+}
+
+impl Bankruptcy {
+    pub async fn update(
+        c: &mongodb::Client,
+        xs: &[Self],
+    ) -> Result<(), MongoError> {
+        if xs.is_empty() {
+            return Ok(());
+        }
+
+        let coll = c.database("main").collection::<Self>("bank-tmp");
+
+        coll.create_index(
+            IndexModel::builder()
+                .keys(doc! { "sig": 1 })
                 .options(IndexOptions::builder().unique(true).build())
                 .build(),
             None,

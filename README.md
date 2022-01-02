@@ -22,6 +22,7 @@ Zo Keepers 🦒
 │   │   Funding Logger
 │   │   Realized PnL Logger
 │   │   Liquidation Logger
+│   │   Bankruptcy Logger
 │   │   Deposit/ Withdraw Logger
 │   │   Trade fills Logger
 ```
