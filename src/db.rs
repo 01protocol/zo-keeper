@@ -2,11 +2,11 @@ use mongodb::{
     bson::{doc, Document},
     error::{BulkWriteFailure, Error as MongoError, ErrorKind},
     options::{IndexOptions, InsertManyOptions, UpdateOptions},
-    Client as MongoClient, Collection, IndexModel,
+    Collection, Database, IndexModel,
 };
 use serde::Serialize;
 use std::time::SystemTime;
-use tracing::info;
+use tracing::{debug, info, Instrument};
 
 #[derive(Serialize)]
 pub struct Trade {
@@ -88,9 +88,102 @@ pub struct Bankruptcy {
     pub socialized_loss: i64,
 }
 
+#[tracing::instrument(
+    skip_all,
+    level = "error",
+    fields(coll = c.name()),
+)]
+async fn insert<T, const N: usize>(
+    c: &Collection<T>,
+    xs: &[T],
+    indices: [IndexModel; N],
+) -> Result<(), MongoError>
+where
+    T: Serialize,
+{
+    if xs.is_empty() {
+        debug!("0 documents, skipping");
+        return Ok(());
+    }
+
+    if !indices.is_empty() {
+        c.create_indexes(indices, None).await?;
+    }
+
+    let res = c
+        .insert_many(
+            xs,
+            // > With unordered inserts, if an error occurs during an
+            // > insert of one of the documents, MongoDB continues to
+            // > insert the remaining documents in the array.
+            //
+            // https://docs.mongodb.com/v3.6/reference/method/db.collection.insert/#perform-an-unordered-insert
+            Some(InsertManyOptions::builder().ordered(false).build()),
+        )
+        .await;
+
+    match res {
+        Err(err) => {
+            match *err.kind {
+                // We want to skip any document that already exists. To
+                // do so, we match explicitly against "duplicate key"
+                // errors, which have the error code 11000. If every
+                // error is a duplicate key error, then the error is
+                // benign and canbe safely ignored.
+                ErrorKind::BulkWrite(BulkWriteFailure {
+                    write_errors: Some(ref es),
+                    ..
+                }) if es.iter().all(|e| e.code == 11000) => {
+                    // Here, we know any failures that occured are
+                    // because the document already exists in the DB.
+                    // Thus, we can get the total number of documents
+                    // inserted by subtracting out the "failed" inserts.
+                    info!("inserted {} documents", xs.len() - es.len());
+                    Ok(())
+                }
+
+                _ => Err(err),
+            }
+        }
+        Ok(r) => {
+            info!("inserted {} documents", r.inserted_ids.len());
+            Ok(())
+        }
+    }
+}
+
+macro_rules! simple_update_impl {
+    { $( ($T:ty, $coll:expr, $idx:expr) ),* $(,)? } => {
+        $(
+            impl $T {
+                pub async fn update(
+                    db: &Database,
+                    xs: &[$T],
+                ) -> Result<(), MongoError> {
+                    insert(
+                        &db.collection::<$T>($coll),
+                        xs,
+                        [IndexModel::builder()
+                            .keys($idx)
+                            .options(IndexOptions::builder().unique(true).build())
+                            .build()],
+                    ).await
+                }
+            }
+        )*
+    }
+}
+
+simple_update_impl! {
+    (Funding, "funding", doc! { "symbol": 1, "lastUpdated": 1 }),
+    (RealizedPnl, "rpnl", doc! { "symbol": 1, "sig": 1 }),
+    (Liquidation, "liq", doc! { "sig": 1 }),
+    (Bankruptcy, "bank", doc! { "sig": 1 }),
+}
+
 impl Trade {
     pub async fn update(
-        client: &MongoClient,
+        db: &Database,
         symbol: &str,
         base_decimals: u8,
         quote_decimals: u8,
@@ -104,9 +197,8 @@ impl Trade {
         let base_mul = 10f64.powi(base_decimals as i32);
         let quote_mul = 10f64.powi(quote_decimals as i32);
 
-        let db = client.database("main");
-        let trades_coll = db.collection::<Self>("trades-tmp");
-        let eq_coll = db.collection::<Document>("eventQueue-tmp");
+        let trades_coll = db.collection::<Self>("trades");
+        let eq_coll = db.collection::<Document>("eventQueue");
 
         Self::execute_update(
             &trades_coll,
@@ -131,24 +223,6 @@ impl Trade {
         base_mul: f64,
         quote_mul: f64,
     ) -> Result<(), MongoError> {
-        // Indices are only created if they don't already exist.
-        trades_coll
-            .create_indexes(
-                [
-                    IndexModel::builder()
-                        .keys(doc! {
-                            "symbol": 1, "control": 1, "orderId": 1, "seqNum": 1
-                        })
-                        .options(IndexOptions::builder().unique(true).build())
-                        .build(),
-                    IndexModel::builder().keys(doc! { "time": 1 }).build(),
-                    IndexModel::builder().keys(doc! { "symbol": 1 }).build(),
-                ]
-                .into_iter(),
-                None,
-            )
-            .await?;
-
         let last_seq_num = eq_coll
             .find_one(None, None)
             .await?
@@ -207,50 +281,26 @@ impl Trade {
             })
             .collect();
 
-        if trades.is_empty() {
-            info!(
-                "{}: no trades from {} to {} ",
-                symbol, last_seq_num, new_seq_num
-            );
-        } else {
-            let res = trades_coll
-                .insert_many(
-                    trades,
-                    // > With unordered inserts, if an error occurs during an
-                    // > insert of one of the documents, MongoDB continues to
-                    // > insert the remaining documents in the array.
-                    //
-                    // https://docs.mongodb.com/v3.6/reference/method/db.collection.insert/#perform-an-unordered-insert
-                    Some(InsertManyOptions::builder().ordered(false).build()),
-                )
-                .await;
-
-            // We want to omit any duplicate key errors. The error code
-            // for that is 11000, so if every error has code 11000 don't
-            // raise an error.
-            if let Err(ref error) = res {
-                match *error.kind {
-                    ErrorKind::BulkWrite(BulkWriteFailure {
-                        write_errors: Some(ref es),
-                        ..
-                    }) if es.iter().all(|e| e.code == 11000) => {
-                        info!(
-                            "{}: events from {} to {} duplicate",
-                            symbol, last_seq_num, new_seq_num
-                        );
-                    }
-
-                    _ => {
-                        res?;
-                    }
-                };
-            }
-
-            info!(
-                "{}: inserted events from {} to {}",
-                symbol, last_seq_num, new_seq_num
-            );
-        }
+        insert(
+            trades_coll,
+            &trades,
+            [
+                IndexModel::builder()
+                    .keys(doc! {
+                        "symbol": 1, "control": 1, "orderId": 1, "seqNum": 1
+                    })
+                    .options(IndexOptions::builder().unique(true).build())
+                    .build(),
+                IndexModel::builder().keys(doc! { "time": 1 }).build(),
+                IndexModel::builder().keys(doc! { "symbol": 1 }).build(),
+            ],
+        )
+        .instrument(tracing::error_span!(
+            "",
+            from = last_seq_num,
+            to = new_seq_num
+        ))
+        .await?;
 
         // Do this after inserting documents to ensure that
         // the sequence number doesn't get updated with a
@@ -262,170 +312,6 @@ impl Trade {
                 Some(UpdateOptions::builder().upsert(true).build()),
             )
             .await?;
-
-        Ok(())
-    }
-}
-
-impl Funding {
-    pub async fn update(
-        c: &mongodb::Client,
-        xs: &[Self],
-    ) -> Result<(), MongoError> {
-        if xs.is_empty() {
-            return Ok(());
-        }
-
-        let coll = c.database("main").collection::<Self>("funding-tmp");
-
-        coll.create_index(
-            IndexModel::builder()
-                .keys(doc! { "symbol": 1, "lastUpdated": 1 })
-                .options(IndexOptions::builder().unique(true).build())
-                .build(),
-            None,
-        )
-        .await?;
-
-        let res = coll.insert_many(xs, None).await;
-
-        // Similar to trades collection, we want to omit any
-        // duplicate key errors, which has error code 11000.
-        if let Err(ref error) = res {
-            match *error.kind {
-                ErrorKind::BulkWrite(BulkWriteFailure {
-                    write_errors: Some(ref es),
-                    ..
-                }) if es.iter().all(|e| e.code == 11000) => {}
-
-                _ => {
-                    res?;
-                }
-            };
-        }
-
-        Ok(())
-    }
-}
-
-impl RealizedPnl {
-    pub async fn update(
-        c: &mongodb::Client,
-        xs: &[Self],
-    ) -> Result<(), MongoError> {
-        if xs.is_empty() {
-            return Ok(());
-        }
-
-        let coll = c.database("main").collection::<Self>("rpnl-tmp");
-
-        coll.create_index(
-            IndexModel::builder()
-                .keys(doc! { "symbol": 1, "sig": 1 })
-                .options(IndexOptions::builder().unique(true).build())
-                .build(),
-            None,
-        )
-        .await?;
-
-        let res = coll.insert_many(xs, None).await;
-
-        // Similar to trades collection, we want to omit any
-        // duplicate key errors, which has error code 11000.
-        if let Err(ref error) = res {
-            match *error.kind {
-                ErrorKind::BulkWrite(BulkWriteFailure {
-                    write_errors: Some(ref es),
-                    ..
-                }) if es.iter().all(|e| e.code == 11000) => {}
-
-                _ => {
-                    res?;
-                }
-            };
-        }
-
-        Ok(())
-    }
-}
-
-impl Liquidation {
-    pub async fn update(
-        c: &mongodb::Client,
-        xs: &[Self],
-    ) -> Result<(), MongoError> {
-        if xs.is_empty() {
-            return Ok(());
-        }
-
-        let coll = c.database("main").collection::<Self>("liq-tmp");
-
-        coll.create_index(
-            IndexModel::builder()
-                .keys(doc! { "sig": 1 })
-                .options(IndexOptions::builder().unique(true).build())
-                .build(),
-            None,
-        )
-        .await?;
-
-        let res = coll.insert_many(xs, None).await;
-
-        // Similar to trades collection, we want to omit any
-        // duplicate key errors, which has error code 11000.
-        if let Err(ref error) = res {
-            match *error.kind {
-                ErrorKind::BulkWrite(BulkWriteFailure {
-                    write_errors: Some(ref es),
-                    ..
-                }) if es.iter().all(|e| e.code == 11000) => {}
-
-                _ => {
-                    res?;
-                }
-            };
-        }
-
-        Ok(())
-    }
-}
-
-impl Bankruptcy {
-    pub async fn update(
-        c: &mongodb::Client,
-        xs: &[Self],
-    ) -> Result<(), MongoError> {
-        if xs.is_empty() {
-            return Ok(());
-        }
-
-        let coll = c.database("main").collection::<Self>("bank-tmp");
-
-        coll.create_index(
-            IndexModel::builder()
-                .keys(doc! { "sig": 1 })
-                .options(IndexOptions::builder().unique(true).build())
-                .build(),
-            None,
-        )
-        .await?;
-
-        let res = coll.insert_many(xs, None).await;
-
-        // Similar to trades collection, we want to omit any
-        // duplicate key errors, which has error code 11000.
-        if let Err(ref error) = res {
-            match *error.kind {
-                ErrorKind::BulkWrite(BulkWriteFailure {
-                    write_errors: Some(ref es),
-                    ..
-                }) if es.iter().all(|e| e.code == 11000) => {}
-
-                _ => {
-                    res?;
-                }
-            };
-        }
 
         Ok(())
     }

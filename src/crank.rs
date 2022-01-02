@@ -2,7 +2,7 @@ use crate::{error::Error, AppState};
 use anchor_client::anchor_lang::prelude::AccountMeta;
 use std::{cmp::min, env, str::FromStr, time::Duration};
 use tokio::time::Interval;
-use tracing::{info, error_span};
+use tracing::{debug, error_span};
 
 pub async fn run(st: &'static AppState) -> Result<(), Error> {
     let cache_oracle_interval =
@@ -76,7 +76,7 @@ async fn cache_oracle_loop(st: &'static AppState, mut interval: Interval) {
                 error_span!("cache_oracle", symbols = symbols_log.as_str());
 
             match res {
-                Ok(sg) => span.in_scope(|| info!("{}", sg)),
+                Ok(sg) => span.in_scope(|| debug!("{}", sg)),
                 Err(e) => st.error(span, e).await,
             };
         });
@@ -118,7 +118,7 @@ async fn cache_interest_loop(
                         error_span!("cache_interest", from = start, to = end);
 
                     match res {
-                        Ok(sg) => span.in_scope(|| info!("{}", sg)),
+                        Ok(sg) => span.in_scope(|| debug!("{}", sg)),
                         Err(e) => st.error(span, e).await,
                     };
                 })
@@ -159,7 +159,7 @@ async fn update_funding_loop(st: &'static AppState, mut interval: Interval) {
                         error_span!("update_funding", symbol = symbol.as_str());
 
                     match res {
-                        Ok(sg) => span.in_scope(|| info!("{}", sg)),
+                        Ok(sg) => span.in_scope(|| debug!("{}", sg)),
                         Err(e) => st.error(span, e).await,
                     };
                 })

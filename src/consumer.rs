@@ -18,7 +18,7 @@ pub async fn run(
     let handles = st.load_dex_markets().map(|(symbol, mkt)| {
         tokio::spawn(consumer_loop(
             st,
-            symbol.clone(),
+            symbol,
             mkt,
             to_consume,
             max_wait,

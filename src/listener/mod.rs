@@ -1,6 +1,9 @@
 mod events;
 
-use crate::{error::Error, AppState};
+use crate::{
+    db,
+    {error::Error, AppState},
+};
 use anchor_client::{
     solana_client::rpc_config::{
         RpcAccountInfoConfig, RpcTransactionLogsConfig,
@@ -18,21 +21,22 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
-use tracing::{error_span, info};
+use tracing::{debug, error_span, info, Instrument};
 
 pub async fn run(st: &'static AppState) -> Result<(), Error> {
     let db_client =
         mongodb::Client::with_uri_str(env::var("DATABASE_URL")?).await?;
 
-    let db_client: &'static _ = Box::leak(Box::new(db_client));
+    let db = db_client.database("main");
+    let db: &'static _ = Box::leak(Box::new(db));
 
     futures::join!(
         listen_oracle_failures(st),
-        listen_event_queue(st, db_client),
-        poll_update_funding(st, db_client),
-        listen_rpnl(st, db_client),
-        listen_liq(st, db_client),
-        listen_bankruptcy(st, db_client),
+        listen_event_queue(st, db),
+        poll_update_funding(st, db),
+        listen_rpnl(st, db),
+        listen_liq(st, db),
+        listen_bankruptcy(st, db),
     );
 
     Ok(())
@@ -89,10 +93,7 @@ async fn listen_oracle_failures(st: &'static AppState) {
 }
 
 /// Listens and logs liquidation events
-async fn listen_liq(
-    st: &'static AppState,
-    db_client: &'static mongodb::Client,
-) {
+async fn listen_liq(st: &'static AppState, db: &'static mongodb::Database) {
     let span = error_span!("liquidation");
 
     loop {
@@ -130,22 +131,18 @@ async fn listen_liq(
                 let events: Vec<zo_abi::events::LiquidationLog> =
                     self::events::parse(resp.value.logs.into_iter(), st).await;
 
-                if events.is_empty() {
-                    continue;
-                }
-
                 let docs: Vec<_> = events
                     .iter()
                     .map(|e| {
                         let copy = (*e).clone();
-                        crate::db::Liquidation {
+                        db::Liquidation {
                             sig: ctx.signature.to_string(),
                             slot: ctx.slot as i64,
                             liquidation_event: e.liquidation_event.to_string(),
                             base_symbol: e.base_symbol.to_string(),
                             quote_symbol: copy
                                 .quote_symbol
-                                .unwrap_or("".to_string()),
+                                .unwrap_or_else(|| "".to_string()),
                             liqor_margin: e.liqor_margin.to_string(),
                             liqee_margin: e.liqee_margin.to_string(),
                             assets_to_liqor: e.assets_to_liqor,
@@ -154,16 +151,9 @@ async fn listen_liq(
                     })
                     .collect();
 
-                if docs.is_empty() {
-                    span.in_scope(|| info!("nothing to update"));
-                } else {
-                    let res =
-                        crate::db::Liquidation::update(db_client, &docs).await;
-
-                    if let Err(e) = res {
-                        st.error(span.clone(), e).await;
-                        continue;
-                    }
+                if let Err(e) = db::Liquidation::update(db, &docs).await {
+                    st.error(span.clone(), e).await;
+                    continue;
                 }
             }
         }
@@ -173,7 +163,7 @@ async fn listen_liq(
 /// Listens and logs bankruptcy events
 async fn listen_bankruptcy(
     st: &'static AppState,
-    db_client: &'static mongodb::Client,
+    db: &'static mongodb::Database,
 ) {
     let span = error_span!("bankruptcy");
 
@@ -212,13 +202,9 @@ async fn listen_bankruptcy(
                 let events: Vec<zo_abi::events::BankruptcyLog> =
                     self::events::parse(resp.value.logs.into_iter(), st).await;
 
-                if events.is_empty() {
-                    continue;
-                }
-
                 let docs: Vec<_> = events
                     .iter()
-                    .map(|e| crate::db::Bankruptcy {
+                    .map(|e| db::Bankruptcy {
                         sig: ctx.signature.to_string(),
                         slot: ctx.slot as i64,
                         base_symbol: e.base_symbol.to_string(),
@@ -231,16 +217,9 @@ async fn listen_bankruptcy(
                     })
                     .collect();
 
-                if docs.is_empty() {
-                    span.in_scope(|| info!("nothing to update"));
-                } else {
-                    let res =
-                        crate::db::Bankruptcy::update(db_client, &docs).await;
-
-                    if let Err(e) = res {
-                        st.error(span.clone(), e).await;
-                        continue;
-                    }
+                if let Err(e) = db::Bankruptcy::update(db, &docs).await {
+                    st.error(span.clone(), e).await;
+                    continue;
                 }
             }
         }
@@ -248,11 +227,8 @@ async fn listen_bankruptcy(
 }
 
 /// Listens and logs realized pnl events
-async fn listen_rpnl(
-    st: &'static AppState,
-    db_client: &'static mongodb::Client,
-) {
-    let span = error_span!("realized pnl");
+async fn listen_rpnl(st: &'static AppState, db: &'static mongodb::Database) {
+    let span = error_span!("rpnl");
 
     loop {
         let sub = ws::try_connect::<RpcSolPubSubClient>(st.cluster.ws_url())
@@ -289,17 +265,13 @@ async fn listen_rpnl(
                 let events: Vec<zo_abi::events::RealizedPnlLog> =
                     self::events::parse(resp.value.logs.into_iter(), st).await;
 
-                if events.is_empty() {
-                    continue;
-                }
-
-                let mut docs: Vec<_> = Vec::new();
+                let mut docs = Vec::new();
 
                 for e in events.into_iter() {
                     let doc = st
                         .load_dex_markets()
                         .find(|(_symbol, m)| m.own_address == e.market_key)
-                        .map(|(symbol, _m)| crate::db::RealizedPnl {
+                        .map(|(symbol, _m)| db::RealizedPnl {
                             symbol,
                             sig: ctx.signature.to_string(),
                             slot: ctx.slot as i64,
@@ -313,16 +285,9 @@ async fn listen_rpnl(
                     docs.push(doc);
                 }
 
-                if docs.is_empty() {
-                    span.in_scope(|| info!("nothing to update"));
-                } else {
-                    let res =
-                        crate::db::RealizedPnl::update(db_client, &docs).await;
-
-                    if let Err(e) = res {
-                        st.error(span.clone(), e).await;
-                        continue;
-                    }
+                if let Err(e) = db::RealizedPnl::update(db, &docs).await {
+                    st.error(span.clone(), e).await;
+                    continue;
                 }
             }
         }
@@ -331,7 +296,7 @@ async fn listen_rpnl(
 
 async fn listen_event_queue(
     st: &'static AppState,
-    db_client: &'static mongodb::Client,
+    db: &'static mongodb::Database,
 ) {
     let handles: Vec<_> = st
         .load_dex_markets()
@@ -388,13 +353,14 @@ async fn listen_event_queue(
                             _ => panic!(),
                         };
 
-                        let db_res = crate::db::Trade::update(
-                            db_client,
+                        let db_res = db::Trade::update(
+                            db,
                             &symbol,
                             base_decimals,
                             quote_decimals,
                             &buf,
                         )
+                        .instrument(span.clone())
                         .await;
 
                         if let Err(e) = db_res {
@@ -412,7 +378,7 @@ async fn listen_event_queue(
 
 async fn poll_update_funding(
     st: &'static AppState,
-    db_client: &'static mongodb::Client,
+    db: &'static mongodb::Database,
 ) {
     let span = error_span!("update_funding");
 
@@ -420,11 +386,10 @@ async fn poll_update_funding(
 
     // Previous update funding time. The funding is only
     // inserted into the DB if the funding time increases.
-    let mut prev: HashMap<String, AtomicU64> = HashMap::new();
-
-    for (s, m) in st.load_dex_markets() {
-        prev.insert(s, AtomicU64::new(m.last_updated));
-    }
+    let prev: HashMap<String, AtomicU64> = st
+        .load_dex_markets()
+        .map(|(s, _)| (s, AtomicU64::new(0)))
+        .collect();
 
     let prev: &'static _ = Box::leak(Box::new(prev));
 
@@ -443,35 +408,36 @@ async fn poll_update_funding(
             })
             .collect();
 
+        if to_update.is_empty() {
+            span.in_scope(|| debug!("nothing to update"));
+            continue;
+        }
+
         let new_entries: Vec<_> = to_update
             .iter()
-            .map(|(symbol, m)| crate::db::Funding {
+            .map(|(symbol, m)| db::Funding {
                 symbol: symbol.clone(),
                 funding_index: { m.funding_index }.to_string(),
                 last_updated: m.last_updated as i64,
             })
             .collect();
 
-        if new_entries.is_empty() {
-            span.in_scope(|| info!("nothing to update"));
-        } else {
-            let res = crate::db::Funding::update(db_client, &new_entries).await;
+        let res = db::Funding::update(db, &new_entries).await;
 
-            if let Err(e) = res {
-                st.error(span.clone(), e).await;
-                continue;
-            }
-
-            let updated: Vec<_> =
-                to_update.iter().map(|(s, _)| s).cloned().collect();
-
-            for (s, m) in to_update.into_iter() {
-                prev.get(&s)
-                    .unwrap()
-                    .store(m.last_updated, Ordering::Relaxed);
-            }
-
-            span.in_scope(|| info!("{}", updated.join(", ")));
+        if let Err(e) = res {
+            st.error(span.clone(), e).await;
+            continue;
         }
+
+        let updated: Vec<_> =
+            to_update.iter().map(|(s, _)| s).cloned().collect();
+
+        for (s, m) in to_update.into_iter() {
+            prev.get(&s)
+                .unwrap()
+                .store(m.last_updated, Ordering::Relaxed);
+        }
+
+        span.in_scope(|| info!("inserted {}", updated.join(", ")));
     }
 }

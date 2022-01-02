@@ -11,13 +11,9 @@ pub async fn parse<T: Event + AnchorDeserialize>(
     let span = error_span!("");
 
     let prog_start_str =
-        format!("{} {} {}", "Program", st.program.id().to_string(), "invoke");
-    let prog_end_str = format!(
-        "{} {} {}",
-        "Program",
-        st.program.id().to_string(),
-        "success"
-    );
+        format!("{} {} {}", "Program", st.program.id(), "invoke");
+    let prog_end_str =
+        format!("{} {} {}", "Program", st.program.id(), "success");
 
     let mut events: Vec<T> = Vec::new();
     let mut is_zo_log = false;

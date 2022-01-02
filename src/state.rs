@@ -37,11 +37,10 @@ impl AppState {
         self.iter_markets().map(|m| {
             (
                 m.symbol.into(),
-                zo_abi::dex::ZoDexMarket::deserialize(
+                *zo_abi::dex::ZoDexMarket::deserialize(
                     &self.rpc.get_account_data(&m.dex_market).unwrap(),
                 )
-                .unwrap()
-                .clone(),
+                .unwrap(),
             )
         })
     }
