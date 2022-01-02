@@ -24,7 +24,14 @@ struct Cli {
 enum Command {
     Crank {},
     Listener {},
-    ConsumeEvents {},
+    Consumer {
+        #[clap(long, default_value = "32")]
+        to_consume: usize,
+        #[clap(long, default_value = "60", help = "seconds")]
+        max_wait: u64,
+        #[clap(long, default_value = "1")]
+        max_queue_length: usize,
+    },
     Liquidator {},
 }
 
@@ -81,7 +88,19 @@ async fn main() -> Result<(), lib::error::Error> {
     match &args.command {
         Command::Crank {} => lib::crank::run(app_state).await?,
         Command::Listener {} => lib::listener::run(app_state).await?,
-        Command::ConsumeEvents {} => lib::consumer::run(app_state).await?,
+        Command::Consumer {
+            to_consume,
+            max_wait,
+            max_queue_length,
+        } => {
+            lib::consumer::run(
+                app_state,
+                *to_consume,
+                std::time::Duration::from_secs(*max_wait),
+                *max_queue_length,
+            )
+            .await?
+        }
         Command::Liquidator {} => lib::liquidator::run(app_state).await?,
     };
 

@@ -12,7 +12,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
-use tracing::{info, error_span};
+use tracing::{error_span, info};
 
 pub async fn run(st: &'static AppState) -> Result<(), Error> {
     let db_client =

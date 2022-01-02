@@ -6,6 +6,7 @@ use mongodb::{
 };
 use serde::Serialize;
 use std::time::SystemTime;
+use tracing::info;
 
 #[derive(Serialize)]
 pub struct Trade {
@@ -100,7 +101,8 @@ impl Trade {
             .unwrap_or(0i64);
 
         let (trades, new_seq_num) =
-            zo_abi::dex::Event::deserialize_since(buf, last_seq_num as u64);
+            zo_abi::dex::Event::deserialize_since(buf, last_seq_num as u64)
+                .unwrap();
 
         let new_seq_num = new_seq_num as i64;
 
@@ -151,7 +153,7 @@ impl Trade {
             .collect();
 
         if trades.is_empty() {
-            tracing::info!(
+            info!(
                 "{}: no trades from {} to {} ",
                 symbol,
                 last_seq_num,
@@ -179,7 +181,7 @@ impl Trade {
                         write_errors: Some(ref es),
                         ..
                     }) if es.iter().all(|e| e.code == 11000) => {
-                        tracing::info!(
+                        info!(
                             "{}: events from {} to {} duplicate",
                             symbol,
                             last_seq_num,
@@ -193,7 +195,7 @@ impl Trade {
                 };
             }
 
-            tracing::info!(
+            info!(
                 "{}: inserted events from {} to {}",
                 symbol,
                 last_seq_num,

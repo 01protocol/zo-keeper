@@ -1,8 +1,8 @@
-pub mod crank;
-pub mod listener;
 pub mod consumer;
-pub mod liquidator;
+pub mod crank;
 pub mod error;
+pub mod liquidator;
+pub mod listener;
 
 mod db;
 mod state;

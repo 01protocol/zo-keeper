@@ -39,7 +39,9 @@ impl AppState {
                 m.symbol.into(),
                 zo_abi::dex::ZoDexMarket::deserialize(
                     &self.rpc.get_account_data(&m.dex_market).unwrap(),
-                ),
+                )
+                .unwrap()
+                .clone(),
             )
         })
     }
