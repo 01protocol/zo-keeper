@@ -3,6 +3,7 @@
 use crate::{db, error::Error, AppState};
 use anchor_client::anchor_lang::Event;
 use futures::TryFutureExt;
+use std::time::SystemTime;
 use tracing::error_span;
 use zo_abi::events;
 
@@ -11,10 +12,9 @@ pub async fn process(
     db: &mongodb::Database,
     ss: &[String],
     sig: String,
-    slot: i64,
 ) {
     let span = error_span!("process");
-    let (rpnl, liq, bank, oracle) = parse(st, ss.iter(), sig, slot);
+    let (rpnl, liq, bank, oracle) = parse(st, ss.iter(), sig);
 
     let on_err = |e| async { st.error(span.clone(), e).await };
 
@@ -37,7 +37,6 @@ fn parse<'a>(
     st: &AppState,
     logs: impl Iterator<Item = &'a String> + 'a,
     sig: String,
-    slot: i64,
 ) -> (
     Vec<db::RealizedPnl>,
     Vec<db::Liquidation>,
@@ -55,6 +54,11 @@ fn parse<'a>(
     let mut liq = Vec::new();
     let mut bank = Vec::new();
     let mut oracle = None;
+
+    let time = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
 
     for l in logs {
         if !is_zo_log {
@@ -93,12 +97,12 @@ fn parse<'a>(
             rpnl.push(db::RealizedPnl {
                 symbol,
                 sig: sig.clone(),
-                slot,
                 margin: e.margin.to_string(),
                 is_long: e.is_long,
                 pnl: e.pnl,
                 qty_paid: e.qty_paid,
                 qty_received: e.qty_received,
+                time,
             });
 
             continue;
@@ -107,7 +111,6 @@ fn parse<'a>(
         if let Some(e) = load::<events::LiquidationLog>(&bytes) {
             liq.push(db::Liquidation {
                 sig: sig.clone(),
-                slot,
                 liquidation_event: e.liquidation_event.to_string(),
                 base_symbol: e.base_symbol.to_string(),
                 quote_symbol: e.quote_symbol.unwrap_or_else(|| "".to_string()),
@@ -115,6 +118,7 @@ fn parse<'a>(
                 liqee_margin: e.liqee_margin.to_string(),
                 assets_to_liqor: e.assets_to_liqor,
                 quote_to_liqor: e.quote_to_liqor,
+                time,
             });
 
             continue;
@@ -123,7 +127,6 @@ fn parse<'a>(
         if let Some(e) = load::<events::BankruptcyLog>(&bytes) {
             bank.push(db::Bankruptcy {
                 sig: sig.clone(),
-                slot,
                 base_symbol: e.base_symbol.to_string(),
                 liqor_margin: e.liqor_margin.to_string(),
                 liqee_margin: e.liqee_margin.to_string(),
@@ -131,6 +134,7 @@ fn parse<'a>(
                 quote_to_liqor: e.quote_to_liqor,
                 insurance_loss: e.insurance_loss,
                 socialized_loss: e.socialized_loss,
+                time,
             });
 
             continue;

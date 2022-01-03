@@ -37,7 +37,6 @@ pub struct Funding {
 pub struct RealizedPnl {
     pub symbol: String,
     pub sig: String,
-    pub slot: i64,
     pub margin: String,
     #[serde(rename = "isLong")]
     pub is_long: bool,
@@ -46,12 +45,12 @@ pub struct RealizedPnl {
     pub qty_paid: i64,
     #[serde(rename = "qtyReceived")]
     pub qty_received: i64,
+    pub time: i64,
 }
 
 #[derive(Serialize)]
 pub struct Liquidation {
     pub sig: String,
-    pub slot: i64,
     #[serde(rename = "liquidationEvent")]
     pub liquidation_event: String,
     #[serde(rename = "baseSymbol")]
@@ -66,12 +65,12 @@ pub struct Liquidation {
     pub assets_to_liqor: i64,
     #[serde(rename = "quoteToLiqor")]
     pub quote_to_liqor: i64,
+    pub time: i64,
 }
 
 #[derive(Serialize)]
 pub struct Bankruptcy {
     pub sig: String,
-    pub slot: i64,
     #[serde(rename = "baseSymbol")]
     pub base_symbol: String,
     #[serde(rename = "liqorMargin")]
@@ -86,6 +85,7 @@ pub struct Bankruptcy {
     pub insurance_loss: i64,
     #[serde(rename = "socializedLoss")]
     pub socialized_loss: i64,
+    pub time: i64,
 }
 
 #[tracing::instrument(

@@ -4,11 +4,8 @@ use crate::{
     db,
     {error::Error, AppState},
 };
-use anchor_client::{
-    solana_client::rpc_config::{
-        RpcAccountInfoConfig, RpcTransactionLogsConfig,
-        RpcTransactionLogsFilter,
-    },
+use anchor_client::solana_client::rpc_config::{
+    RpcAccountInfoConfig, RpcTransactionLogsConfig, RpcTransactionLogsFilter,
 };
 use futures::StreamExt;
 use jsonrpc_core_client::transports::ws;
@@ -75,9 +72,8 @@ async fn scrape_logs(st: &'static AppState, db: &'static mongodb::Database) {
             }
 
             let sig = resp.value.signature;
-            let slot = resp.context.slot as i64;
 
-            events::process(st, db, &resp.value.logs, sig, slot).await;
+            events::process(st, db, &resp.value.logs, sig).await;
 
             span.in_scope(|| {
                 debug!(
