@@ -6,6 +6,7 @@ use anchor_client::{
 };
 use clap::{Parser, Subcommand};
 use std::env;
+use zo_keeper as lib;
 
 #[derive(Parser)]
 #[clap(override_usage = "zo-bots [OPTIONS]... <SUBCOMMAND>")]

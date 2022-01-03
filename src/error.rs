@@ -5,6 +5,8 @@ use tracing::{error, Span};
 pub enum Error {
     #[error("Skipped oracles {}", .0.join(", "))]
     OraclesSkipped(Vec<String>),
+
+    // Library errors
     #[error("{0}")]
     AnchorClient(#[from] anchor_client::ClientError),
     #[error("{0}")]
@@ -17,8 +19,6 @@ pub enum Error {
     Db(#[from] mongodb::error::Error),
     #[error("{0}")]
     Var(#[from] std::env::VarError),
-    #[error("Error decoding base64 log: {}", .0)]
-    DecodingError(String),
 }
 
 pub type ErrorContext = (Span, Error);

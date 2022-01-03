@@ -9,7 +9,6 @@ use anchor_client::{
         RpcAccountInfoConfig, RpcTransactionLogsConfig,
         RpcTransactionLogsFilter,
     },
-    EventContext,
 };
 use futures::StreamExt;
 use jsonrpc_core_client::transports::ws;
@@ -19,7 +18,7 @@ use std::{
     collections::HashMap,
     env,
     sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tracing::{debug, error_span, info, Instrument};
 
@@ -31,21 +30,16 @@ pub async fn run(st: &'static AppState) -> Result<(), Error> {
     let db: &'static _ = Box::leak(Box::new(db));
 
     futures::join!(
-        listen_oracle_failures(st),
+        scrape_logs(st, db),
         listen_event_queue(st, db),
         poll_update_funding(st, db),
-        listen_rpnl(st, db),
-        listen_liq(st, db),
-        listen_bankruptcy(st, db),
     );
 
     Ok(())
 }
 
-async fn listen_oracle_failures(st: &'static AppState) {
-    let span = error_span!("oracle_failures");
-
-    let re = regex::Regex::new(r"NOOPS/CACHE_ORACLE/SYM/(\w+)").unwrap();
+async fn scrape_logs(st: &'static AppState, db: &'static mongodb::Database) {
+    let span = error_span!("scrape_logs");
 
     loop {
         let sub = ws::try_connect::<RpcSolPubSubClient>(st.cluster.ws_url())
@@ -69,227 +63,28 @@ async fn listen_oracle_failures(st: &'static AppState) {
         };
 
         while let Some(resp) = sub.next().await {
-            if let Ok(resp) = resp {
-                let skipped = resp
-                    .value
-                    .logs
-                    .into_iter()
-                    .filter_map(|s| {
-                        re.captures(&s)
-                            .map(|c| c.get(1).unwrap().as_str().to_owned())
-                    })
-                    .collect::<Vec<_>>();
+            let t = Instant::now();
 
-                if !skipped.is_empty() {
-                    st.error(
-                        span.clone(),
-                        crate::error::Error::OraclesSkipped(skipped),
-                    )
-                    .await;
-                }
-            }
-        }
-    }
-}
+            let resp = match resp {
+                Ok(x) => x,
+                Err(_) => continue,
+            };
 
-/// Listens and logs liquidation events
-async fn listen_liq(st: &'static AppState, db: &'static mongodb::Database) {
-    let span = error_span!("liquidation");
-
-    loop {
-        let sub = ws::try_connect::<RpcSolPubSubClient>(st.cluster.ws_url())
-            .unwrap()
-            .await
-            .and_then(|p| {
-                p.logs_subscribe(
-                    RpcTransactionLogsFilter::Mentions(vec![
-                        zo_abi::ID.to_string()
-                    ]),
-                    Some(RpcTransactionLogsConfig { commitment: None }),
-                )
-            });
-
-        let mut sub = match sub {
-            Ok(x) => x,
-            Err(e) => {
-                st.error(span.clone(), e).await;
+            if resp.value.err.is_some() {
                 continue;
             }
-        };
 
-        while let Some(resp) = sub.next().await {
-            if let Ok(resp) = resp {
-                if resp.value.err.is_some() {
-                    continue;
-                }
+            let sig = resp.value.signature;
+            let slot = resp.context.slot as i64;
 
-                let ctx = EventContext {
-                    signature: resp.value.signature.parse().unwrap(),
-                    slot: resp.context.slot,
-                };
+            events::process(st, db, &resp.value.logs, sig, slot).await;
 
-                let events: Vec<zo_abi::events::LiquidationLog> =
-                    self::events::parse(resp.value.logs.into_iter(), st).await;
-
-                let docs: Vec<_> = events
-                    .iter()
-                    .map(|e| {
-                        let copy = (*e).clone();
-                        db::Liquidation {
-                            sig: ctx.signature.to_string(),
-                            slot: ctx.slot as i64,
-                            liquidation_event: e.liquidation_event.to_string(),
-                            base_symbol: e.base_symbol.to_string(),
-                            quote_symbol: copy
-                                .quote_symbol
-                                .unwrap_or_else(|| "".to_string()),
-                            liqor_margin: e.liqor_margin.to_string(),
-                            liqee_margin: e.liqee_margin.to_string(),
-                            assets_to_liqor: e.assets_to_liqor,
-                            quote_to_liqor: e.quote_to_liqor,
-                        }
-                    })
-                    .collect();
-
-                if let Err(e) = db::Liquidation::update(db, &docs).await {
-                    st.error(span.clone(), e).await;
-                    continue;
-                }
-            }
-        }
-    }
-}
-
-/// Listens and logs bankruptcy events
-async fn listen_bankruptcy(
-    st: &'static AppState,
-    db: &'static mongodb::Database,
-) {
-    let span = error_span!("bankruptcy");
-
-    loop {
-        let sub = ws::try_connect::<RpcSolPubSubClient>(st.cluster.ws_url())
-            .unwrap()
-            .await
-            .and_then(|p| {
-                p.logs_subscribe(
-                    RpcTransactionLogsFilter::Mentions(vec![
-                        zo_abi::ID.to_string()
-                    ]),
-                    Some(RpcTransactionLogsConfig { commitment: None }),
+            span.in_scope(|| {
+                debug!(
+                    "processed in {}μs",
+                    Instant::now().duration_since(t).as_micros()
                 )
             });
-
-        let mut sub = match sub {
-            Ok(x) => x,
-            Err(e) => {
-                st.error(span.clone(), e).await;
-                continue;
-            }
-        };
-
-        while let Some(resp) = sub.next().await {
-            if let Ok(resp) = resp {
-                if resp.value.err.is_some() {
-                    continue;
-                }
-
-                let ctx = EventContext {
-                    signature: resp.value.signature.parse().unwrap(),
-                    slot: resp.context.slot,
-                };
-
-                let events: Vec<zo_abi::events::BankruptcyLog> =
-                    self::events::parse(resp.value.logs.into_iter(), st).await;
-
-                let docs: Vec<_> = events
-                    .iter()
-                    .map(|e| db::Bankruptcy {
-                        sig: ctx.signature.to_string(),
-                        slot: ctx.slot as i64,
-                        base_symbol: e.base_symbol.to_string(),
-                        liqor_margin: e.liqor_margin.to_string(),
-                        liqee_margin: e.liqee_margin.to_string(),
-                        assets_to_liqor: e.assets_to_liqor,
-                        quote_to_liqor: e.quote_to_liqor,
-                        insurance_loss: e.insurance_loss,
-                        socialized_loss: e.socialized_loss,
-                    })
-                    .collect();
-
-                if let Err(e) = db::Bankruptcy::update(db, &docs).await {
-                    st.error(span.clone(), e).await;
-                    continue;
-                }
-            }
-        }
-    }
-}
-
-/// Listens and logs realized pnl events
-async fn listen_rpnl(st: &'static AppState, db: &'static mongodb::Database) {
-    let span = error_span!("rpnl");
-
-    loop {
-        let sub = ws::try_connect::<RpcSolPubSubClient>(st.cluster.ws_url())
-            .unwrap()
-            .await
-            .and_then(|p| {
-                p.logs_subscribe(
-                    RpcTransactionLogsFilter::Mentions(vec![
-                        zo_abi::ID.to_string()
-                    ]),
-                    Some(RpcTransactionLogsConfig { commitment: None }),
-                )
-            });
-
-        let mut sub = match sub {
-            Ok(x) => x,
-            Err(e) => {
-                st.error(span.clone(), e).await;
-                continue;
-            }
-        };
-
-        while let Some(resp) = sub.next().await {
-            if let Ok(resp) = resp {
-                if resp.value.err.is_some() {
-                    continue;
-                }
-
-                let ctx = EventContext {
-                    signature: resp.value.signature.parse().unwrap(),
-                    slot: resp.context.slot,
-                };
-
-                let events: Vec<zo_abi::events::RealizedPnlLog> =
-                    self::events::parse(resp.value.logs.into_iter(), st).await;
-
-                let mut docs = Vec::new();
-
-                for e in events.into_iter() {
-                    let doc = st
-                        .load_dex_markets()
-                        .find(|(_symbol, m)| m.own_address == e.market_key)
-                        .map(|(symbol, _m)| db::RealizedPnl {
-                            symbol,
-                            sig: ctx.signature.to_string(),
-                            slot: ctx.slot as i64,
-                            margin: e.margin.to_string(),
-                            is_long: e.is_long,
-                            pnl: e.pnl,
-                            qty_paid: e.qty_paid,
-                            qty_received: e.qty_received,
-                        })
-                        .unwrap();
-                    docs.push(doc);
-                }
-
-                if let Err(e) = db::RealizedPnl::update(db, &docs).await {
-                    st.error(span.clone(), e).await;
-                    continue;
-                }
-            }
         }
     }
 }
