@@ -33,7 +33,26 @@ enum Command {
         #[clap(long, default_value = "1")]
         max_queue_length: usize,
     },
-    Liquidator {},
+    Liquidator {
+        /// Address of the dex for which to find liquidatable accounts
+        #[clap(short, long)]
+        dex_program: Pubkey,
+
+        /// Address of the 01 program
+        #[clap(short, long)]
+        zo_program: Pubkey,
+
+        #[clap(short, long)]
+        serum_dex_program: Pubkey,
+
+        /// The number of bots that are running
+        #[clap(long)]
+        num_workers: u8,
+
+        /// The thread this bot is responsible for
+        #[clap(long)]
+        n: u8,
+    },
 }
 
 #[tokio::main]
@@ -105,7 +124,23 @@ async fn main() -> Result<(), lib::error::Error> {
             )
             .await?
         }
-        Command::Liquidator {} => lib::liquidator::run(app_state).await?,
+        Command::Liquidator {
+            dex_program,
+            zo_program,
+            serum_dex_program,
+            num_workers,
+            n,
+        } => {
+            lib::liquidator::run(
+                app_state,
+                *dex_program,
+                *zo_program,
+                *serum_dex_program,
+                *num_workers,
+                *n,
+            )
+            .await?
+        }
     };
 
     let _ = err_handle.await;
