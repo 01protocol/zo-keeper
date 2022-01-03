@@ -145,9 +145,9 @@ fn parse<'a>(
 }
 
 #[inline(always)]
-fn load<T: Event>(mut buf: &[u8]) -> Option<T> {
+fn load<T: Event>(buf: &[u8]) -> Option<T> {
     match buf[..8] == T::discriminator() {
-        true => T::deserialize(&mut buf).ok(),
+        true => T::deserialize(&mut &buf[8..]).ok(),
         false => None,
     }
 }
