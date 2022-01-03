@@ -71,9 +71,10 @@ async fn scrape_logs(st: &'static AppState, db: &'static mongodb::Database) {
                 continue;
             }
 
-            let sig = resp.value.signature;
-
-            events::process(st, db, &resp.value.logs, sig).await;
+            tokio::spawn(async move {
+                events::process(st, db, &resp.value.logs, resp.value.signature)
+                    .await
+            });
 
             span.in_scope(|| {
                 debug!(
