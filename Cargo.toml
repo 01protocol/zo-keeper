@@ -8,10 +8,15 @@ name = "zo_keeper"
 
 [dependencies]
 zo-abi = { path = "./abi" }
+anchor-lang = "0.19.0"
 anchor-client = "0.19.0"
+solana-client = "1.9"
+solana-program = "1.9"
+solana-sdk = "1.9"
 solana-rpc = "1.9"
 solana-account-decoder = "1.9"
 solana-transaction-status = "1.9.2"
+jsonrpc-core = "18"
 jsonrpc-core-client = { version = "18", features = ["ws"] }
 dotenv = "0.15"
 clap = { version = "3.0.0-rc.8", features = ["derive", "env"] }
@@ -25,3 +30,9 @@ base64 = "0.13"
 regex = "1"
 thiserror = "1"
 bytemuck = "1"
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
+az = "1"
+num-traits = "0.2"
+fixed = "1"
+serum_dex = "0.5"
+spl-token = "3.2"

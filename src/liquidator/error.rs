@@ -1,0 +1,28 @@
+#[derive(Debug)]
+pub enum ErrorCode {
+    FetchAccountFailure,
+    IncorrectData,
+    InvalidResult,
+    ConnectionFailure,
+    EndpointFailure,
+    SubscriptionFailure,
+    InvalidProgramId,
+    OracleDoesNotExist,
+    MathFailure,
+    InexistentControl,
+    LockFailure,
+    MMFCheckFailure,
+    TimeFailure,
+    IRFailure,
+    SendFailure,
+    CollateralFailure,
+    NoCollateral,
+    NoPositions,
+    LiquidationFailure,
+    InvalidKeypairFile,
+    SwapError,
+    TimeoutExceeded,
+    CancelFailure,
+    SettlementFailure,
+    NoAsks
+}
