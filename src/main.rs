@@ -39,7 +39,6 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<(), lib::error::Error> {
     dotenv::dotenv().ok();
-    tracing_subscriber::fmt::init();
 
     let args = Cli::parse();
 
@@ -67,10 +66,11 @@ async fn main() -> Result<(), lib::error::Error> {
         panic!("Invalid state signer nonce");
     }
 
-    let (tx, rx) = tokio::sync::mpsc::channel(128);
+    let (err_tx, err_rx) = tokio::sync::mpsc::channel(128);
+    let (msg_tx, msg_rx) = tokio::sync::mpsc::channel(128);
 
     let app_state = lib::AppState {
-        err_tx: tx,
+        err_tx,
         cluster,
         client,
         program,
@@ -84,7 +84,10 @@ async fn main() -> Result<(), lib::error::Error> {
 
     let app_state: &'static _ = Box::leak(Box::new(app_state));
 
-    let err_handle = tokio::spawn(lib::error::error_handler(rx));
+    let err_handle = tokio::spawn(lib::error::error_handler(err_rx));
+    let msg_handle = tokio::spawn(lib::log::notify_worker(msg_rx));
+
+    lib::log::init(msg_tx);
 
     match &args.command {
         Command::Crank {} => lib::crank::run(app_state).await?,
@@ -106,6 +109,7 @@ async fn main() -> Result<(), lib::error::Error> {
     };
 
     let _ = err_handle.await;
+    let _ = msg_handle.await;
 
     Ok(())
 }

@@ -15,7 +15,7 @@ use std::{
     collections::HashMap,
     env,
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tracing::{debug, error_span, info, Instrument};
 
@@ -60,8 +60,6 @@ async fn scrape_logs(st: &'static AppState, db: &'static mongodb::Database) {
         };
 
         while let Some(resp) = sub.next().await {
-            let t = Instant::now();
-
             let resp = match resp {
                 Ok(x) => x,
                 Err(_) => continue,
@@ -74,13 +72,6 @@ async fn scrape_logs(st: &'static AppState, db: &'static mongodb::Database) {
             tokio::spawn(async move {
                 events::process(st, db, &resp.value.logs, resp.value.signature)
                     .await
-            });
-
-            span.in_scope(|| {
-                debug!(
-                    "processed in {}μs",
-                    Instant::now().duration_since(t).as_micros()
-                )
             });
         }
     }

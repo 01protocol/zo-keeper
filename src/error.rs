@@ -56,10 +56,7 @@ pub async fn error_handler(mut rx: Receiver<ErrorContext>) {
             )) => if let Some(TransactionError::AlreadyProcessed) = x.err {}
 
             _ => {
-                span.in_scope(|| {
-                    error!("{}", e);
-                    error!("{:?}", e);
-                });
+                span.in_scope(|| error!("{}\n{:?}", e, e));
             }
         };
     }

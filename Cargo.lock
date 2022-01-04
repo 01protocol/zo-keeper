@@ -2339,15 +2339,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ffbee8634e0d45d258acb448e7eaab3fce7a0a467395d4d9f228e3c1f01fb2e4"
 
 [[package]]
-name = "matchers"
-version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f099785f7595cc4b4553a174ce30dd7589ef93391ff414dbb67f62392b9e0ce1"
-dependencies = [
- "regex-automata",
-]
-
-[[package]]
 name = "matches"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3419,15 +3410,6 @@ checksum = "d07a8629359eb56f1e2fb1652bb04212c072a87ba68546a04065d525673ac461"
 dependencies = [
  "aho-corasick",
  "memchr",
- "regex-syntax",
-]
-
-[[package]]
-name = "regex-automata"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c230d73fb8d8c1b9c0b3135c5142a8acee3a0558fb8db5cf1cb65f8d7862132"
-dependencies = [
  "regex-syntax",
 ]
 
@@ -5204,6 +5186,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "time"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41effe7cfa8af36f439fac33861b66b049edc6f9a32331e2312660529c1c24ad"
+dependencies = [
+ "itoa 0.4.8",
+ "libc",
+]
+
+[[package]]
 name = "time-macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5555,6 +5547,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-bunyan-formatter"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cb2ad6aa9b1c637d84c54db002275bbf72a7f3c6fed80f8b33f5af0c39027e9"
+dependencies = [
+ "gethostname",
+ "log 0.4.14",
+ "serde",
+ "serde_json",
+ "time 0.3.5",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tracing-core"
 version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5585,35 +5594,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing-serde"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb65ea441fbb84f9f6748fd496cf7f63ec9af5bca94dd86456978d055e8eb28b"
-dependencies = [
- "serde",
- "tracing-core",
-]
-
-[[package]]
 name = "tracing-subscriber"
-version = "0.2.25"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e0d2eaa99c3c2e41547cfa109e910a68ea03823cccad4a0525dcbc9b01e8c71"
+checksum = "5d81bfa81424cc98cb034b837c985b7a290f592e5b4322f353f94a0ab0f9f594"
 dependencies = [
  "ansi_term",
- "chrono",
- "lazy_static",
- "matchers",
- "regex",
- "serde",
- "serde_json",
  "sharded-slab",
  "smallvec 1.7.0",
  "thread_local",
- "tracing",
  "tracing-core",
  "tracing-log",
- "tracing-serde",
 ]
 
 [[package]]
@@ -6230,19 +6221,23 @@ dependencies = [
  "anchor-client",
  "base64 0.13.0",
  "bytemuck",
+ "chrono",
  "clap 3.0.0-rc.8",
  "dotenv",
  "futures 0.3.19",
  "jsonrpc-core-client",
  "mongodb",
  "regex",
+ "reqwest",
  "serde",
+ "serde_json",
  "solana-account-decoder",
  "solana-rpc",
  "solana-transaction-status",
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-bunyan-formatter",
  "tracing-subscriber",
  "zo-abi",
 ]
