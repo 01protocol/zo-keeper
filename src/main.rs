@@ -26,31 +26,25 @@ enum Command {
     Crank {},
     Listener {},
     Consumer {
+        /// Events to consume each iteration
         #[clap(long, default_value = "32")]
         to_consume: usize,
-        #[clap(long, default_value = "60", help = "seconds")]
+
+        /// Maximum time to stay idle, in seconds
+        #[clap(long, default_value = "60")]
         max_wait: u64,
+
+        /// Maximum queue length before processing
         #[clap(long, default_value = "1")]
         max_queue_length: usize,
     },
     Liquidator {
-        /// Address of the dex for which to find liquidatable accounts
-        #[clap(short, long)]
-        dex_program: Pubkey,
-
-        /// Address of the 01 program
-        #[clap(short, long)]
-        zo_program: Pubkey,
-
-        #[clap(short, long)]
-        serum_dex_program: Pubkey,
-
         /// The number of bots that are running
-        #[clap(long)]
+        #[clap(long, default_value = "1")]
         num_workers: u8,
 
         /// The thread this bot is responsible for
-        #[clap(long)]
+        #[clap(long, default_value = "0")]
         n: u8,
     },
 }
@@ -125,17 +119,14 @@ async fn main() -> Result<(), lib::error::Error> {
             .await?
         }
         Command::Liquidator {
-            dex_program,
-            zo_program,
-            serum_dex_program,
             num_workers,
             n,
         } => {
             lib::liquidator::run(
                 app_state,
-                *dex_program,
-                *zo_program,
-                *serum_dex_program,
+                zo_abi::dex::ID,
+                zo_abi::ID,
+                zo_abi::serum::ID,
                 *num_workers,
                 *n,
             )
