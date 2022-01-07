@@ -96,13 +96,12 @@ fn liquidate_loop(
             }
             Err(e) => {
                 span.in_scope(|| error!("Had an oopsie-doopsie {:?}", e));
-                std::process::exit(72);
             }
         };
 
         std::thread::sleep(std::time::Duration::from_millis(250));
 
-        if last_refresh.elapsed().as_secs() > 600 {
+        if last_refresh.elapsed().as_secs() > 6000 {
             database.refresh_accounts(&opts, &payer_pubkey).unwrap(); // TODO: Refactor this is bad.
             last_refresh = std::time::Instant::now();
             span.in_scope(|| info!("Refreshed account table"));
