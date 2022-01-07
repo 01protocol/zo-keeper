@@ -18,14 +18,15 @@ pub fn init(rx: mpsc::Sender<String>) {
 pub async fn notify_worker(
     mut rx: mpsc::Receiver<String>,
 ) -> Result<(), reqwest::Error> {
-    let url = match std::env::var("DISCORD_WEBHOOK_URL") {
-        Ok(x) => x,
-        Err(_) => return Ok(()),
-    };
+    let url_option: Option<String> = std::env::var("DISCORD_WEBHOOK_URL").ok();
 
     while let Some(s) = rx.recv().await {
+        let url = match url_option.as_ref() {
+            Some(x) => x,
+            None => continue,
+        };
         let _ = reqwest::Client::new()
-            .post(&url)
+            .post(url)
             .json(&serde_json::json!({ "content": s }))
             .send()
             .await
