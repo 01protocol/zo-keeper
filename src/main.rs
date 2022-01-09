@@ -9,14 +9,21 @@ use std::env;
 use zo_keeper as lib;
 
 #[derive(Parser)]
-#[clap(override_usage = "zo-bots [OPTIONS]... <SUBCOMMAND>")]
+#[clap(term_width = 72)]
 struct Cli {
+    /// Name of cluster or its RPC endpoint.
+    #[clap(short, long, env = "SOLANA_CLUSTER", default_value = "devnet")]
+    cluster: Cluster,
+
+    /// Path to keypair. If not set, the JSON encoded keypair is read
+    /// from $SOLANA_PAYER_KEY instead.
+    #[clap(short, long)]
+    payer: Option<std::path::PathBuf>,
+
+    /// Pubkey for the zo state struct.
     #[clap(long, env = "ZO_STATE_PUBKEY")]
     zo_state_pubkey: Pubkey,
-    #[clap(long, env = "SOLANA_CLUSTER_RPC_URL")]
-    cluster_rpc_url: String,
-    #[clap(long, env = "SOLANA_CLUSTER_WS_URL")]
-    cluster_ws_url: String,
+
     #[clap(subcommand)]
     command: Command,
 }
@@ -49,26 +56,37 @@ enum Command {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<(), lib::error::Error> {
+fn main() -> Result<(), lib::error::Error> {
     dotenv::dotenv().ok();
+    tracing_subscriber::fmt::init();
 
-    let args = Cli::parse();
+    let Cli {
+        cluster,
+        payer,
+        zo_state_pubkey,
+        command,
+    } = Cli::parse();
 
-    let payer_key = env::var("SOLANA_PAYER_KEY")
-        .ok()
-        .and_then(|v| keypair::read_keypair(&mut v.as_bytes()).ok())
-        .expect("Failed to parse SOLANA_PAYER_KEY");
+    let payer = match payer {
+        Some(p) => keypair::read_keypair_file(&p).unwrap_or_else(|_| {
+            panic!("Failed to read keypair from {}", p.to_string_lossy())
+        }),
+        None => match env::var("SOLANA_PAYER_KEY").ok() {
+            Some(k) => keypair::read_keypair(&mut k.as_bytes())
+                .ok()
+                .expect("Failed to parse $SOLANA_PAYER_KEY"),
+            None => panic!("Could not load payer key,"),
+        },
+    };
 
-    let cluster = Cluster::Custom(args.cluster_rpc_url, args.cluster_ws_url);
     let client = Client::new_with_options(
         cluster.clone(),
-        payer_key,
+        payer,
         CommitmentConfig::confirmed(),
     );
+
     let program = client.program(zo_abi::ID);
     let rpc = program.rpc();
-    let zo_state_pubkey = args.zo_state_pubkey;
     let zo_state: zo_abi::State = program.account(zo_state_pubkey).unwrap();
     let zo_cache: zo_abi::Cache = program.account(zo_state.cache).unwrap();
 
@@ -79,63 +97,56 @@ async fn main() -> Result<(), lib::error::Error> {
         panic!("Invalid state signer nonce");
     }
 
-    let (err_tx, err_rx) = tokio::sync::mpsc::channel(128);
-    let (msg_tx, msg_rx) = tokio::sync::mpsc::channel(128);
-
     let app_state = lib::AppState {
-        err_tx,
         cluster,
         client,
         program,
         rpc,
         zo_state,
         zo_cache,
-        zo_state_pubkey: args.zo_state_pubkey,
+        zo_state_pubkey,
         zo_cache_pubkey: zo_state.cache,
         zo_state_signer_pubkey,
     };
 
     let app_state: &'static _ = Box::leak(Box::new(app_state));
 
-    let err_handle = tokio::spawn(lib::error::error_handler(err_rx));
-    let msg_handle = tokio::spawn(lib::log::notify_worker(msg_rx));
-
-    lib::log::init(msg_tx);
-
-    match &args.command {
-        Command::Crank {} => lib::crank::run(app_state).await?,
-        Command::Listener {} => lib::listener::run(app_state).await?,
-        Command::Consumer {
-            to_consume,
-            max_wait,
-            max_queue_length,
-        } => {
-            lib::consumer::run(
-                app_state,
-                *to_consume,
-                std::time::Duration::from_secs(*max_wait),
-                *max_queue_length,
-            )
-            .await?
-        }
-        Command::Liquidator {
-            num_workers,
-            n,
-        } => {
+    match command {
+        Command::Liquidator { num_workers, n } => {
             lib::liquidator::run(
                 app_state,
                 zo_abi::dex::ID,
                 zo_abi::ID,
                 zo_abi::serum::ID,
-                *num_workers,
-                *n,
-            )
-            .await?
+                num_workers,
+                n,
+            )?;
+        }
+        c => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+
+            match c {
+                Command::Crank {} => rt.block_on(lib::crank::run(app_state))?,
+                Command::Listener {} => {
+                    rt.block_on(lib::listener::run(app_state))?
+                }
+                Command::Consumer {
+                    to_consume,
+                    max_wait,
+                    max_queue_length,
+                } => rt.block_on(lib::consumer::run(
+                    app_state,
+                    to_consume,
+                    std::time::Duration::from_secs(max_wait),
+                    max_queue_length,
+                ))?,
+                _ => panic!(),
+            }
         }
     };
-
-    let _ = err_handle.await;
-    let _ = msg_handle.await;
 
     Ok(())
 }

@@ -4,20 +4,22 @@ use crate::{db, error::Error, AppState};
 use anchor_client::anchor_lang::Event;
 use futures::TryFutureExt;
 use std::time::SystemTime;
-use tracing::error_span;
+use tracing::warn;
 use zo_abi::events;
 
+#[tracing::instrument(skip_all, level = "error")]
 pub async fn process(
     st: &AppState,
     db: &mongodb::Database,
-    ss: &[String],
+    ss: Vec<String>,
     sig: String,
 ) {
-    let span = error_span!("process");
     let (rpnl, liq, bank, oracle) = parse(st, ss.iter(), sig);
 
-    let on_err = |e| async { st.error(span.clone(), e).await };
-
+    let on_err = |e| {
+        let e = Error::from(e);
+        warn!("{}", e);
+    };
     let _ = futures::join!(
         db::RealizedPnl::update(db, &rpnl).map_err(on_err),
         db::Liquidation::update(db, &liq).map_err(on_err),
@@ -26,8 +28,8 @@ pub async fn process(
 
     match oracle {
         Some(e) if !e.symbols.is_empty() => {
-            st.error(span.clone(), Error::OraclesSkipped(e.symbols))
-                .await;
+            let e = Error::OraclesSkipped(e.symbols);
+            warn!("{}", e);
         }
         _ => {}
     }

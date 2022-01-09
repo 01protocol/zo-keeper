@@ -17,7 +17,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
-use tracing::{debug, error_span, info, Instrument};
+use tracing::{debug, error_span, info, warn, Instrument};
 
 pub async fn run(st: &'static AppState) -> Result<(), Error> {
     let db_client =
@@ -35,10 +35,15 @@ pub async fn run(st: &'static AppState) -> Result<(), Error> {
     Ok(())
 }
 
+#[tracing::instrument(skip_all, level = "error", name = "scrape_logs")]
 async fn scrape_logs(st: &'static AppState, db: &'static mongodb::Database) {
-    let span = error_span!("scrape_logs");
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
+        // On disconnect, retry every 5s.
+        interval.tick().await;
+
         let sub = ws::try_connect::<RpcSolPubSubClient>(st.cluster.ws_url())
             .unwrap()
             .await
@@ -54,7 +59,8 @@ async fn scrape_logs(st: &'static AppState, db: &'static mongodb::Database) {
         let mut sub = match sub {
             Ok(x) => x,
             Err(e) => {
-                st.error(span.clone(), e).await;
+                let e = Error::from(e);
+                warn!("{}", e);
                 continue;
             }
         };
@@ -69,10 +75,12 @@ async fn scrape_logs(st: &'static AppState, db: &'static mongodb::Database) {
                 continue;
             }
 
-            tokio::spawn(async move {
-                events::process(st, db, &resp.value.logs, resp.value.signature)
-                    .await
-            });
+            tokio::spawn(events::process(
+                st,
+                db,
+                resp.value.logs,
+                resp.value.signature,
+            ));
         }
     }
 }
@@ -112,7 +120,8 @@ async fn listen_event_queue(
 
                     let mut sub = match sub {
                         Err(e) => {
-                            st.error(span.clone(), e).await;
+                            let e = Error::from(e);
+                            warn!("{}", e);
                             continue;
                         }
                         Ok(x) => x,
@@ -124,7 +133,8 @@ async fn listen_event_queue(
                         let resp = match resp {
                             Ok(x) => x,
                             Err(e) => {
-                                st.error(span.clone(), e).await;
+                                let e = Error::from(e);
+                                warn!("{}", e);
                                 continue;
                             }
                         };
@@ -147,8 +157,8 @@ async fn listen_event_queue(
                         .await;
 
                         if let Err(e) = db_res {
-                            st.error(span.clone(), e).await;
-                            continue;
+                            let e = Error::from(e);
+                            warn!("{}", e);
                         }
                     }
                 }
@@ -159,13 +169,13 @@ async fn listen_event_queue(
     let _ = futures::future::join_all(handles).await;
 }
 
+#[tracing::instrument(skip_all, level = "error", name = "update_funding")]
 async fn poll_update_funding(
     st: &'static AppState,
     db: &'static mongodb::Database,
 ) {
-    let span = error_span!("update_funding");
-
     let mut interval = tokio::time::interval(Duration::from_secs(10));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     // Previous update funding time. The funding is only
     // inserted into the DB if the funding time increases.
@@ -192,7 +202,7 @@ async fn poll_update_funding(
             .collect();
 
         if to_update.is_empty() {
-            span.in_scope(|| debug!("nothing to update"));
+            debug!("nothing to update");
             continue;
         }
 
@@ -205,10 +215,9 @@ async fn poll_update_funding(
             })
             .collect();
 
-        let res = db::Funding::update(db, &new_entries).await;
-
-        if let Err(e) = res {
-            st.error(span.clone(), e).await;
+        if let Err(e) = db::Funding::update(db, &new_entries).await {
+            let e = Error::from(e);
+            warn!("{}", e);
             continue;
         }
 
@@ -221,6 +230,6 @@ async fn poll_update_funding(
                 .store(m.last_updated, Ordering::Relaxed);
         }
 
-        span.in_scope(|| info!("inserted {}", updated.join(", ")));
+        info!("inserted {}", updated.join(", "));
     }
 }

@@ -15,7 +15,7 @@ pub mod utils;
 
 use opts::Opts;
 
-pub async fn run(
+pub fn run(
     st: &'static AppState,
     dex_program: Pubkey,
     zo_program: Pubkey,
@@ -23,22 +23,18 @@ pub async fn run(
     num_workers: u8,
     n: u8,
 ) -> Result<(), Error> {
-    tokio::task::spawn_blocking(move || {
-        liquidation::start(
-            &st,
-            Opts {
-                cluster: st.cluster.clone(),
-                http_endpoint: st.cluster.url().to_string(),
-                ws_endpoint: st.cluster.ws_url().to_string(),
-                dex_program,
-                zo_program,
-                serum_dex_program,
-                num_workers,
-                n,
-            },
-        )
-    })
-    .await
-    .unwrap();
+    liquidation::start(
+        &st,
+        Opts {
+            cluster: st.cluster.clone(),
+            http_endpoint: st.cluster.url().to_string(),
+            ws_endpoint: st.cluster.ws_url().to_string(),
+            dex_program,
+            zo_program,
+            serum_dex_program,
+            num_workers,
+            n,
+        },
+    );
     Ok(())
 }

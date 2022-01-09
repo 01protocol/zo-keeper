@@ -19,11 +19,11 @@ solana-transaction-status = "1.9.2"
 jsonrpc-core = "18"
 jsonrpc-core-client = { version = "18", features = ["ws"] }
 dotenv = "0.15"
-clap = { version = "3.0.0-rc.8", features = ["derive", "env"] }
+clap = { version = "3.0.0-rc.8", default-features = false, features = ["std", "derive", "env"] }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros", "sync"] }
 futures = "0.3"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-bunyan-formatter = "0.3"
 serde = "1"
 serde_json = "1"
@@ -32,10 +32,10 @@ base64 = "0.13"
 regex = "1"
 thiserror = "1"
 bytemuck = "1"
-reqwest = { version = "0.11", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
 chrono = "0.4"
 az = "1"
 num-traits = "0.2"
 fixed = "1"
 serum_dex = "0.5"
 spl-token = "3.2"
+itertools = "0.10"
