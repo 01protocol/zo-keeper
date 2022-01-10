@@ -58,7 +58,17 @@ enum Command {
 
 fn main() -> Result<(), lib::error::Error> {
     dotenv::dotenv().ok();
-    tracing_subscriber::fmt::init();
+
+    {
+        use tracing_subscriber::{util::SubscriberInitExt, EnvFilter};
+
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            // https://no-color.org/
+            .with_ansi(env::var_os("NO_COLOR").is_none())
+            .finish()
+            .init();
+    }
 
     let Cli {
         cluster,
