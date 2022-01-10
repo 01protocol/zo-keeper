@@ -1,14 +1,17 @@
 use crate::{error::Error, AppState};
 use anchor_client::solana_sdk::instruction::AccountMeta;
 use itertools::Itertools;
-use std::{cmp::min, env, marker::Send, str::FromStr, time::Duration};
+use std::{cmp::min, marker::Send, sync::Arc, time::Duration};
 use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{debug, warn};
 
-pub async fn run(st: &'static AppState) -> Result<(), Error> {
-    let cache_oracle_duration =
-        load_env_duration("ZO_CACHE_ORACLE_INTERVAL_MS", 2000);
+pub struct CrankConfig {
+    pub cache_oracle_interval: Duration,
+    pub cache_interest_interval: Duration,
+    pub update_funding_interval: Duration,
+}
 
+pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
     let cache_oracle_tasks = st
         .iter_oracles()
         .chunks(4)
@@ -23,17 +26,15 @@ pub async fn run(st: &'static AppState) -> Result<(), Error> {
                 })
                 .unzip();
 
-            let symbols: &'static _ = Box::leak(Box::new(symbols));
-            let accounts: &'static _ = Box::leak(Box::new(accounts));
+            let symbols = Arc::new(symbols);
+            let accounts = Arc::new(accounts);
 
-            loop_blocking(interval(cache_oracle_duration.clone()), move || {
-                cache_oracle(st, symbols, accounts)
-            })
+            loop_blocking(
+                interval(cfg.cache_oracle_interval.clone()),
+                move || cache_oracle(st, &symbols, &accounts),
+            )
         })
         .collect::<Vec<_>>();
-
-    let cache_interest_duration =
-        load_env_duration("ZO_CACHE_INTEREST_INTERVAL_MS", 5000);
 
     let cache_interest_tasks = (0..st.zo_state.total_collaterals as u8)
         .step_by(4)
@@ -42,21 +43,19 @@ pub async fn run(st: &'static AppState) -> Result<(), Error> {
             let end = min(i + 4, st.zo_state.total_collaterals as u8);
 
             loop_blocking(
-                interval(cache_interest_duration.clone()),
+                interval(cfg.cache_interest_interval.clone()),
                 move || cache_interest(st, start, end),
             )
         });
 
-    let update_funding_duration =
-        load_env_duration("ZO_UPDATE_FUNDING_INTERVAL_MS", 15000);
-
     let update_funding_tasks = st.load_dex_markets().map(|(symbol, market)| {
-        let symbol: &'static _ = Box::leak(symbol.into_boxed_str());
-        let market: &'static _ = Box::leak(Box::new(market));
+        let symbol = Arc::new(symbol);
+        let market = Arc::new(market);
 
-        loop_blocking(interval(update_funding_duration.clone()), move || {
-            update_funding(st, symbol, market)
-        })
+        loop_blocking(
+            interval(cfg.update_funding_interval.clone()),
+            move || update_funding(st, &symbol, &market),
+        )
     });
 
     futures::join!(
@@ -66,15 +65,6 @@ pub async fn run(st: &'static AppState) -> Result<(), Error> {
     );
 
     Ok(())
-}
-
-fn load_env_duration(s: &str, default: u64) -> Duration {
-    let ms = match env::var(s) {
-        Ok(x) => u64::from_str(&x)
-            .unwrap_or_else(|_| panic!("Failed to parse ${}", s)),
-        Err(_) => default,
-    };
-    Duration::from_millis(ms)
 }
 
 fn interval(d: Duration) -> Interval {

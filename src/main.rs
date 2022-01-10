@@ -5,7 +5,7 @@ use anchor_client::{
     Client, Cluster,
 };
 use clap::{Parser, Subcommand};
-use std::env;
+use std::{env, time::Duration};
 use zo_keeper as lib;
 
 #[derive(Parser)]
@@ -30,7 +30,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    Crank {},
+    Crank {
+        // Interval for cache oracle, in seconds
+        #[clap(long, default_value = "2", parse(try_from_str = parse_seconds))]
+        cache_oracle_interval: Duration,
+
+        // Interval for cache interest, in seconds
+        #[clap(long, default_value = "5", parse(try_from_str = parse_seconds))]
+        cache_interest_interval: Duration,
+
+        // Interval for update funding, in seconds
+        #[clap(long, default_value = "15", parse(try_from_str = parse_seconds))]
+        update_funding_interval: Duration,
+    },
     Listener {},
     Consumer {
         /// Events to consume each iteration
@@ -38,8 +50,8 @@ enum Command {
         to_consume: usize,
 
         /// Maximum time to stay idle, in seconds
-        #[clap(long, default_value = "60")]
-        max_wait: u64,
+        #[clap(long, default_value = "60", parse(try_from_str = parse_seconds))]
+        max_wait: Duration,
 
         /// Maximum queue length before processing
         #[clap(long, default_value = "1")]
@@ -83,7 +95,6 @@ fn main() -> Result<(), lib::error::Error> {
         }),
         None => match env::var("SOLANA_PAYER_KEY").ok() {
             Some(k) => keypair::read_keypair(&mut k.as_bytes())
-                .ok()
                 .expect("Failed to parse $SOLANA_PAYER_KEY"),
             None => panic!("Could not load payer key,"),
         },
@@ -139,7 +150,18 @@ fn main() -> Result<(), lib::error::Error> {
                 .unwrap();
 
             match c {
-                Command::Crank {} => rt.block_on(lib::crank::run(app_state))?,
+                Command::Crank {
+                    cache_oracle_interval,
+                    cache_interest_interval,
+                    update_funding_interval,
+                } => rt.block_on(lib::crank::run(
+                    app_state,
+                    lib::crank::CrankConfig {
+                        cache_oracle_interval,
+                        cache_interest_interval,
+                        update_funding_interval,
+                    },
+                ))?,
                 Command::Listener {} => {
                     rt.block_on(lib::listener::run(app_state))?
                 }
@@ -150,7 +172,7 @@ fn main() -> Result<(), lib::error::Error> {
                 } => rt.block_on(lib::consumer::run(
                     app_state,
                     to_consume,
-                    std::time::Duration::from_secs(max_wait),
+                    max_wait,
                     max_queue_length,
                 ))?,
                 _ => panic!(),
@@ -159,4 +181,9 @@ fn main() -> Result<(), lib::error::Error> {
     };
 
     Ok(())
+}
+
+fn parse_seconds(s: &str) -> Result<Duration, std::num::ParseFloatError> {
+    use std::str::FromStr;
+    f64::from_str(s).map(Duration::from_secs_f64)
 }
