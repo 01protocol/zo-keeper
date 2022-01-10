@@ -7,7 +7,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     time::{Duration, Instant},
 };
-use tracing::{info, warn};
+use tracing::{info, warn, debug};
 
 pub async fn run(
     st: &'static AppState,
@@ -93,6 +93,7 @@ fn consume(
         .collect::<Vec<_>>();
 
     if events.is_empty() {
+        debug!("no events, skipping");
         return;
     }
 
