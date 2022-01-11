@@ -19,9 +19,12 @@ use spl_token::ID as TOKEN_ID;
 
 use std::cell::RefMut;
 
-use tracing::{error_span, info, warn, error};
+use tracing::{error, error_span, info, warn};
 
-use zo_abi::{accounts, instruction, Control, Margin, OrderType, State, dex::ZoDexMarket as MarketState};
+use zo_abi::{
+    accounts, dex::ZoDexMarket as MarketState, instruction, Control, Margin,
+    OrderType, State,
+};
 
 use crate::liquidator::{error::ErrorCode, math::SafeOp, utils::*};
 
@@ -47,7 +50,7 @@ pub fn swap_asset(
 
     let client = program.rpc();
 
-    let margin_account = client.get_account(&payer_margin).unwrap();
+    let margin_account = client.get_account(payer_margin).unwrap();
     let col_index = 41 + asset_index * 16;
     let collateral: [u8; 16] = margin_account.data[col_index..col_index + 16]
         .to_vec()
@@ -71,7 +74,9 @@ pub fn swap_asset(
         let ask_handle: NodeHandle = match asks.find_min() {
             Some(min) => min,
             None => {
-                span.in_scope(|| error!("No asks found for swapping {}", asset_index));
+                span.in_scope(|| {
+                    error!("No asks found for swapping {}", asset_index)
+                });
                 return Err(ErrorCode::NoAsks);
             }
         };
@@ -150,7 +155,7 @@ pub fn swap_asset(
                     rent: RENT_ID,
                 })
                 .args(instruction::Swap {
-                    buy: buy,
+                    buy,
                     allow_borrow: false,
                     amount: swap_amount, // TODO: make this more principled
                     min_rate: 1u64, // WARNING: this can have a lot of slippage
@@ -195,10 +200,9 @@ pub fn close_position(
     let native_coin_total = i64::from_le_bytes(native_coin_total_bytes);
     let span = error_span!("close_position", index = index);
 
-    let result;
-    if native_coin_total < 0 {
+    let result = if native_coin_total < 0 {
         // Short order
-        result = retry_send(
+        retry_send(
             || {
                 program
                     .request()
@@ -210,8 +214,7 @@ pub fn close_position(
                         margin: *margin_key,
                         control: margin.control,
                         open_orders: control.open_orders_agg[index].key,
-                        dex_market:
-                            dex_market.own_address,
+                        dex_market: dex_market.own_address,
                         req_q: dex_market.req_q,
                         event_q: dex_market.event_q,
                         market_bids: dex_market.bids,
@@ -233,10 +236,10 @@ pub fn close_position(
                     .options(CommitmentConfig::confirmed())
             },
             5,
-        );
+        )
     } else {
         // Long order
-        result = retry_send(
+        retry_send(
             || {
                 program
                     .request()
@@ -270,12 +273,14 @@ pub fn close_position(
                     .options(CommitmentConfig::confirmed())
             },
             5,
-        );
-    }
+        )
+    };
 
     match result {
         Ok(tx) => {
-            span.in_scope(|| info!("Successfully placed order to close position {:?}", tx));
+            span.in_scope(|| {
+                info!("Successfully placed order to close position {:?}", tx)
+            });
             Ok(())
         }
         Err(e) => {

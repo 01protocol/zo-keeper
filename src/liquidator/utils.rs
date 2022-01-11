@@ -28,8 +28,7 @@ use solana_sdk::{
     signer::keypair::Keypair,
 };
 
-use std::ops::Deref;
-use std::str::FromStr;
+use std::{ops::Deref, str::FromStr};
 
 use tracing::{error, error_span};
 
@@ -61,30 +60,32 @@ pub fn get_account_info<'a>(
     account_info
 }
 
-pub fn get_type_from_account<'a, T>(key: &Pubkey, account: &mut Account) -> T
+pub fn get_type_from_account<T>(key: &Pubkey, account: &mut Account) -> T
 where
     T: ZeroCopy + Owner,
-{   
+{
     let span = error_span!("get_type_from_account", key = %key, generic = %std::any::type_name::<T>());
     let account_info: AccountInfo<'_> = get_account_info(key, account);
     let loader: AccountLoader<'_, T> =
         AccountLoader::try_from(&account_info).unwrap();
     let value = loader.load();
     match value {
-        Ok(x) => x.deref().clone(),
+        Ok(x) => *x.deref(),
         Err(e) => {
-            span.in_scope(|| error!(
-                "Failed to get type {:?} from account {}. Error: {:?}.",
-                std::any::type_name::<T>(),
-                key,
-                e
-            ));
+            span.in_scope(|| {
+                error!(
+                    "Failed to get type {:?} from account {}. Error: {:?}.",
+                    std::any::type_name::<T>(),
+                    key,
+                    e
+                )
+            });
             panic!()
         }
     }
 }
 
-pub fn get_type_from_ui_account<'a, T>(key: &Pubkey, account: &UiAccount) -> T
+pub fn get_type_from_ui_account<T>(key: &Pubkey, account: &UiAccount) -> T
 where
     T: ZeroCopy + Owner,
 {
@@ -101,7 +102,7 @@ where
         AccountLoader::try_from(&account_info).unwrap();
     let value = loader.load();
     match value {
-        Ok(x) => x.deref().clone(),
+        Ok(x) => *x.deref(),
         Err(e) => panic!("{:?}", e),
     }
 }
@@ -278,5 +279,5 @@ pub fn retry_send<'a>(
         span.in_scope(|| error!("Failed to send request {:#?}", ix));
     }
 
-    return Err(ErrorCode::TimeoutExceeded);
+    Err(ErrorCode::TimeoutExceeded)
 }

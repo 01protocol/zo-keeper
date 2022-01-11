@@ -20,19 +20,22 @@ use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey as SolanaPubkey;
 use solana_sdk::pubkey::Pubkey;
 
-use std::cell::RefCell;
-use std::collections::{hash_map::IntoIter, HashMap};
-use std::mem;
-use std::ops::Deref;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::{
+    cell::RefCell,
+    collections::{hash_map::IntoIter, HashMap},
+    mem,
+    ops::Deref,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 use tokio::runtime::Runtime;
 
 use tracing::{error, error_span, info};
 
-use zo_abi::dex::ZoDexMarket as MarketState;
-use zo_abi::{Cache, Control, Margin, State, MAX_MARKETS};
-use zo_abi::{FractionType, WrappedI80F48};
+use zo_abi::{
+    dex::ZoDexMarket as MarketState, Cache, Control, FractionType, Margin,
+    State, WrappedI80F48, MAX_MARKETS,
+};
 
 use crate::liquidator::{
     error::ErrorCode, liquidation, margin_utils::*, math::*, opts::Opts,
@@ -90,7 +93,7 @@ impl AccountTable {
                 &account.control,
                 &options.num_workers,
                 &options.n,
-            ) || account.authority.eq(&payer_pubkey)
+            ) || account.authority.eq(payer_pubkey)
             {
                 margin_table.insert(key, account);
             }
@@ -105,30 +108,19 @@ impl AccountTable {
         {
             let account = get_type_from_account::<Control>(&key, &mut control);
             if is_right_remainder(&key, &options.num_workers, &options.n)
-                || account.authority.eq(&payer_pubkey)
+                || account.authority.eq(payer_pubkey)
             {
                 control_table.insert(key, account);
                 size += 1;
             }
         }
-        let span = error_span!(
-            "account_table_new",
-            "{}",
-            payer_pubkey.to_string()
-        );
+        let span =
+            error_span!("account_table_new", "{}", payer_pubkey.to_string());
 
-        span.in_scope(|| {
-            info!("State size: {}", mem::size_of::<State>())
-        });
-        span.in_scope(|| {
-            info!("Cache size: {}", mem::size_of::<Cache>())
-        });
-        span.in_scope(|| {
-            info!("Margin size: {}", mem::size_of::<Margin>())
-        });
-        span.in_scope(|| {
-            info!("Control size: {}", mem::size_of::<Control>())
-        });
+        span.in_scope(|| info!("State size: {}", mem::size_of::<State>()));
+        span.in_scope(|| info!("Cache size: {}", mem::size_of::<Cache>()));
+        span.in_scope(|| info!("Margin size: {}", mem::size_of::<Margin>()));
+        span.in_scope(|| info!("Control size: {}", mem::size_of::<Control>()));
 
         let (cache, cache_key) = match get_accounts(
             &client,
@@ -136,7 +128,7 @@ impl AccountTable {
             mem::size_of::<Cache>() as u64 + 8u64,
         ) {
             Ok(vec) => {
-                if vec.len() == 0 {
+                if vec.is_empty() {
                     panic!("No cache accounts!");
                 } else if vec.len() > 1 {
                     panic!("Too many cache accounts! {} found.", vec.len());
@@ -160,7 +152,7 @@ impl AccountTable {
             mem::size_of::<State>() as u64 + 8u64,
         ) {
             Ok(vec) => {
-                if vec.len() == 0 {
+                if vec.is_empty() {
                     panic!("No state accounts!");
                 } else if vec.len() > 1 {
                     panic!("Too many state accounts!");
@@ -272,11 +264,7 @@ impl AccountTable {
         }
     }
 
-    pub fn refresh_accounts(
-        &mut self,
-        opts: &Opts,
-        payer_pubkey: &Pubkey,
-    ) -> () {
+    pub fn refresh_accounts(&mut self, opts: &Opts, payer_pubkey: &Pubkey) {
         let new_table = Self::new(opts, payer_pubkey);
         self.margin_table = new_table.margin_table;
         self.control_table = new_table.control_table;
@@ -291,22 +279,22 @@ impl AccountTable {
         self.size = new_table.size;
     }
 
-    pub fn update_margin(&mut self, key: &Pubkey, account: &Margin) -> () {
+    pub fn update_margin(&mut self, key: &Pubkey, account: &Margin) {
         self.margin_table.insert(*key, *account);
     }
 
-    pub fn update_control(&mut self, key: &Pubkey, account: &Control) -> () {
+    pub fn update_control(&mut self, key: &Pubkey, account: &Control) {
         match self.control_table.insert(*key, *account) {
             Some(_) => (),
             None => self.size += 1,
         }
     }
 
-    pub fn update_cache(&mut self, cache: &Cache) -> () {
+    pub fn update_cache(&mut self, cache: &Cache) {
         self.cache = *cache;
     }
 
-    pub fn update_state(&mut self, state: &State) -> () {
+    pub fn update_state(&mut self, state: &State) {
         self.state = *state;
     }
 
@@ -386,27 +374,26 @@ impl DbWrapper {
                 // Get the updated payer accounts
 
                 /*******************************/
-                let program: Program =
-                    anchor_client.program(program_id.clone());
-                let dex_program = dex_program.clone();
-                let serum_dex_program = serum_dex_program.clone();
-                let payer_pubkey = payer_pubkey.clone();
-                let payer_margin_key = payer_margin_key.clone();
+                let program: Program = anchor_client.program(*program_id);
+                let dex_program = *dex_program;
+                let serum_dex_program = *serum_dex_program;
+                let payer_pubkey = *payer_pubkey;
+                let payer_margin_key = *payer_margin_key;
                 let payer_margin =
-                    db.margin_table.get(&payer_margin_key).unwrap().clone();
+                    *db.margin_table.get(&payer_margin_key).unwrap();
                 let (payer_control_key, payer_control) =
                     db.get_control_from_margin(&payer_margin).unwrap();
-                let payer_control_key = payer_control_key.clone();
-                let payer_control = payer_control.clone();
+                let payer_control_key = *payer_control_key;
+                let payer_control = *payer_control;
                 let payer_oo: [Pubkey; MAX_MARKETS as usize] =
                     get_oo_keys(&payer_control.open_orders_agg);
                 let control_pair = db.get_control_from_margin(&margin).unwrap();
-                let control = control_pair.1.clone();
-                let cache = db.cache.clone();
-                let cache_key = db.cache_key.clone();
-                let state = db.state.clone();
-                let state_key = db.state_key.clone();
-                let state_signer = db.state_signer.clone();
+                let control = *control_pair.1;
+                let cache = db.cache;
+                let cache_key = db.cache_key;
+                let state = db.state;
+                let state_key = db.state_key;
+                let state_signer = db.state_signer;
                 let market_state = db.market_state.clone();
                 let serum_markets = db.serum_markets.clone();
                 let serum_vault_signers = db.serum_vault_signers.clone();
@@ -443,8 +430,7 @@ impl DbWrapper {
                             span_clone.in_scope(|| {
                                 error!(
                                     "Error liquidating account {} : {:?}",
-                                    margin.authority,
-                                    e
+                                    margin.authority, e
                                 )
                             });
                         }
@@ -453,17 +439,16 @@ impl DbWrapper {
 
                 handles.push(handle);
             } else if cancel_orders {
-                let program: Program =
-                    anchor_client.program(program_id.clone());
-                let dex_program = dex_program.clone();
-                let payer_pubkey = payer_pubkey.clone();
+                let program: Program = anchor_client.program(*program_id);
+                let dex_program = *dex_program;
+                let payer_pubkey = *payer_pubkey;
                 let control_pair = db.get_control_from_margin(&margin).unwrap();
-                let control = control_pair.1.clone();
-                let cache = db.cache.clone();
-                let cache_key = db.cache_key.clone();
-                let state = db.state.clone();
-                let state_key = db.state_key.clone();
-                let state_signer = db.state_signer.clone();
+                let control = *control_pair.1;
+                let cache = db.cache;
+                let cache_key = db.cache_key;
+                let state = db.state;
+                let state_key = db.state_key;
+                let state_signer = db.state_signer;
                 let market_state = db.market_state.clone();
 
                 let span_clone = span.clone();
@@ -489,8 +474,7 @@ impl DbWrapper {
                             span_clone.in_scope(|| {
                                 error!(
                                     "Error liquidating account {} : {:?}",
-                                    margin.authority,
-                                    e
+                                    margin.authority, e
                                 )
                             });
                         }
@@ -527,22 +511,15 @@ impl DbWrapper {
             }
 
             let oracle =
-                get_oracle(&cache, &state.collaterals[i].oracle_symbol)?;
+                get_oracle(cache, &state.collaterals[i].oracle_symbol)?;
             let borrow_cache = cache.borrow_cache[i];
             let usdc_col = safe_mul_i80f48(coll.into(), oracle.price.into());
 
-            let accrued;
-            if coll > WrappedI80F48::zero() {
-                accrued = safe_mul_i80f48(
-                    usdc_col,
-                    borrow_cache.supply_multiplier.into(),
-                );
+            let accrued = if coll > WrappedI80F48::zero() {
+                safe_mul_i80f48(usdc_col, borrow_cache.supply_multiplier.into())
             } else {
-                accrued = safe_mul_i80f48(
-                    usdc_col,
-                    borrow_cache.borrow_multiplier.into(),
-                );
-            }
+                safe_mul_i80f48(usdc_col, borrow_cache.borrow_multiplier.into())
+            };
 
             col = safe_add_i80f48(col, accrued);
         }
@@ -581,20 +558,28 @@ impl DbWrapper {
         let has_oo = has_open_orders(cache, control)?;
         match (cancel_result, result) {
             (Ok(is_not_cancel), Ok(is_not_liq)) => {
-                return Ok((!is_not_cancel, !is_not_liq && !has_oo))
+                Ok((!is_not_cancel, !is_not_liq && !has_oo))
             }
             (Ok(is_not_cancel), Err(e)) => {
-                span.in_scope(|| error!("Error checking maintenance fraction: {:?}", e));
-                return Ok((!is_not_cancel, false));
+                span.in_scope(|| {
+                    error!("Error checking maintenance fraction: {:?}", e)
+                });
+                Ok((!is_not_cancel, false))
             }
             (Err(e), Ok(is_not_liq)) => {
-                span.in_scope(|| error!("Error checking cancel fraction: {:?}", e));
-                return Ok((false, !is_not_liq && !has_oo));
+                span.in_scope(|| {
+                    error!("Error checking cancel fraction: {:?}", e)
+                });
+                Ok((false, !is_not_liq && !has_oo))
             }
             (Err(e1), Err(e2)) => {
-                span.in_scope(|| error!("Error checking cancel fraction: {:?}", e1));
-                span.in_scope(|| error!("Error checking maintenance fraction: {:?}", e2));
-                return Err(ErrorCode::LiquidationFailure);
+                span.in_scope(|| {
+                    error!("Error checking cancel fraction: {:?}", e1)
+                });
+                span.in_scope(|| {
+                    error!("Error checking maintenance fraction: {:?}", e2)
+                });
+                Err(ErrorCode::LiquidationFailure)
             }
         }
     }

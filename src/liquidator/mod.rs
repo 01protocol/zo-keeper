@@ -24,7 +24,7 @@ pub fn run(
     n: u8,
 ) -> Result<(), Error> {
     liquidation::start(
-        &st,
+        st,
         Opts {
             cluster: st.cluster.clone(),
             http_endpoint: st.cluster.url().to_string(),

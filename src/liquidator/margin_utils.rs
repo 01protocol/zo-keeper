@@ -2,8 +2,7 @@ use fixed::types::I80F48;
 
 use solana_sdk::pubkey::Pubkey;
 
-use std::cell::Ref;
-use std::cmp;
+use std::{cell::Ref, cmp};
 
 use zo_abi::{
     Cache, CollateralInfo, Control, FractionType, Margin, MarkCache,
@@ -133,7 +132,7 @@ fn get_perp_acc_params(
     let mut pos_open_notional_vec = Vec::new();
 
     for (index, oo_info) in open_orders_agg.iter().enumerate() {
-        if !(index < max_markets) {
+        if index >= max_markets {
             break;
         }
         if oo_info.key == Pubkey::default() {
@@ -211,7 +210,7 @@ fn get_spot_borrows(
 
     // loop through negative margin collateral
     for (dep_index, col_info) in col_info_arr.iter().enumerate() {
-        if !(dep_index < max_cols) {
+        if dep_index >= max_cols {
             break;
         }
 
@@ -232,7 +231,7 @@ fn get_spot_borrows(
         }
 
         // get oracle price
-        let oracle_cache = get_oracle(&cache, &col_info.oracle_symbol).unwrap();
+        let oracle_cache = get_oracle(cache, &col_info.oracle_symbol).unwrap();
         let oracle_price: I80F48 = oracle_cache.price.into();
 
         // get position notional
@@ -324,7 +323,7 @@ pub fn get_actual_collateral_vec(
 
     let max_col = state.total_collaterals;
     for (i, _v) in { margin.collateral }.iter().enumerate() {
-        if !(i < max_col as usize) {
+        if i >= max_col as usize {
             break;
         }
 
@@ -343,7 +342,7 @@ pub fn get_actual_collateral_vec(
         )
         .unwrap();
 
-        let oracle_cache = get_oracle(&cache, &info.oracle_symbol).unwrap();
+        let oracle_cache = get_oracle(cache, &info.oracle_symbol).unwrap();
         let price: I80F48 = oracle_cache.price.into();
 
         // Price is only weighted when collateral is non-negative.

@@ -1,7 +1,4 @@
-use crate::{
-    db,
-    {error::Error, AppState},
-};
+use crate::{db, error::Error, AppState};
 use anchor_client::solana_client::rpc_config::{
     RpcAccountInfoConfig, RpcTransactionLogsConfig, RpcTransactionLogsFilter,
 };
