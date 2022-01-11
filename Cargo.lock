@@ -5342,16 +5342,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "time"
-version = "0.3.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41effe7cfa8af36f439fac33861b66b049edc6f9a32331e2312660529c1c24ad"
-dependencies = [
- "itoa 0.4.8",
- "libc",
-]
-
-[[package]]
 name = "time-macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5700,23 +5690,6 @@ dependencies = [
  "proc-macro2 1.0.34",
  "quote 1.0.10",
  "syn 1.0.84",
-]
-
-[[package]]
-name = "tracing-bunyan-formatter"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cb2ad6aa9b1c637d84c54db002275bbf72a7f3c6fed80f8b33f5af0c39027e9"
-dependencies = [
- "gethostname",
- "log 0.4.14",
- "serde",
- "serde_json",
- "time 0.3.5",
- "tracing",
- "tracing-core",
- "tracing-log",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -6404,14 +6377,11 @@ dependencies = [
  "dotenv",
  "fixed",
  "futures 0.3.19",
- "itertools 0.10.3",
  "jsonrpc-core",
  "jsonrpc-core-client",
  "mongodb",
  "num-traits",
- "regex",
  "serde",
- "serde_json",
  "serum_dex",
  "solana-account-decoder",
  "solana-client",
@@ -6423,7 +6393,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
- "tracing-bunyan-formatter",
  "tracing-subscriber",
  "zo-abi",
 ]

@@ -1,6 +1,5 @@
 use crate::{error::Error, AppState};
 use anchor_client::solana_sdk::instruction::AccountMeta;
-use itertools::Itertools;
 use std::{cmp::min, marker::Send, sync::Arc, time::Duration};
 use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{debug, warn};
@@ -14,10 +13,11 @@ pub struct CrankConfig {
 pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
     let cache_oracle_tasks = st
         .iter_oracles()
+        .collect::<Vec<_>>()
         .chunks(4)
-        .into_iter()
         .map(|x| {
             let (symbols, accounts): (Vec<String>, Vec<AccountMeta>) = x
+                .into_iter()
                 .map(|x| {
                     let symbol = x.symbol.into();
                     let acc =
