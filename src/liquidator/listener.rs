@@ -9,17 +9,15 @@ use anchor_lang::{Owner, ZeroCopy};
 use jsonrpc_core::futures::StreamExt;
 use jsonrpc_core_client::transports::ws;
 
-use tokio::runtime::Runtime;
-use tokio::sync::mpsc;
+use tokio::{runtime::Runtime, sync::mpsc};
 
 use solana_account_decoder::UiAccount;
 use solana_rpc::rpc_pubsub::RpcSolPubSubClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
 
-use std::mem;
-use std::str::FromStr;
+use std::{mem, str::FromStr};
 
-use tracing::{error_span, info, error};
+use tracing::{error, error_span, info};
 
 use zo_abi::{Cache, Control, Margin, State};
 
@@ -58,10 +56,9 @@ impl TryFrom<UiAccount> for Command {
                 state: account,
             }),
             _ => {
-                span.in_scope(|| error!(
-                    "Got incorrect account data length: {}",
-                    data_len
-                ));
+                span.in_scope(|| {
+                    error!("Got incorrect account data length: {}", data_len)
+                });
                 Err(Self::Error::IncorrectData)
             }
         }
@@ -71,14 +68,14 @@ impl TryFrom<UiAccount> for Command {
 pub fn start_listener(
     runtime: &Runtime,
     program_id: &Pubkey,
-    ws_url: &String,
+    ws_url: &str,
     db: Db,
     modulus: &u8,
     remainder: &u8,
 ) {
     let (tx, mut rx) = get_channel(1024);
-    let modulus = modulus.clone();
-    let remainder = remainder.clone();
+    let modulus = *modulus;
+    let remainder = *remainder;
     runtime.spawn(async move {
         let span = error_span!("listener");
         while let Some(cmd) = rx.recv().await {
@@ -125,9 +122,9 @@ pub fn start_listener(
         }
     });
 
-    let id = program_id.clone();
-    let url = ws_url.clone();
-    let tx2 = tx.clone();
+    let id = *program_id;
+    let url = ws_url.to_string();
+    let tx2 = tx;
     runtime.spawn(async move {
         start_processor(&id, &url, tx2).await.unwrap();
     });
@@ -142,7 +139,7 @@ pub fn get_channel(
 // Should have a fn for listening, one for processing.
 async fn start_processor(
     program_id: &Pubkey,
-    ws_endpoint: &String,
+    ws_endpoint: &str,
     tx: mpsc::Sender<Command>,
 ) -> Result<(), ErrorCode> {
     let connection = ws::try_connect::<RpcSolPubSubClient>(ws_endpoint)
@@ -174,7 +171,7 @@ async fn start_processor(
     Ok(())
 }
 
-fn spawn_listener<'a, T: ZeroCopy + Owner + Sync + Send>(
+fn spawn_listener<T: ZeroCopy + Owner + Sync + Send>(
     program_id: &Pubkey,
     client: &RpcSolPubSubClient,
     tx: mpsc::Sender<Command>,
@@ -189,7 +186,7 @@ fn spawn_listener<'a, T: ZeroCopy + Owner + Sync + Send>(
         .program_subscribe(program_id.to_string(), Some(accounts_config))
         .map_err(|_| ErrorCode::SubscriptionFailure)?;
 
-    let tx = tx.clone();
+    let tx = tx;
     Ok(tokio::spawn(async move {
         let span = error_span!("listener");
         while let Some(result) = subscriber.next().await {
@@ -219,16 +216,14 @@ fn spawn_listener<'a, T: ZeroCopy + Owner + Sync + Send>(
                         }
                     }
                 }
-                Err(_) => span.in_scope(|| error!(
-                    "No {} account here",
-                    std::any::type_name::<T>()
-                )),
+                Err(_) => span.in_scope(|| {
+                    error!("No {} account here", std::any::type_name::<T>())
+                }),
             }
         }
-        span.in_scope(|| error!(
-            "{} stream closed. Panicking!",
-            std::any::type_name::<T>()
-        ));
+        span.in_scope(|| {
+            error!("{} stream closed. Panicking!", std::any::type_name::<T>())
+        });
         panic!();
     }))
 }

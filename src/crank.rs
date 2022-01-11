@@ -29,10 +29,9 @@ pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
             let symbols = Arc::new(symbols);
             let accounts = Arc::new(accounts);
 
-            loop_blocking(
-                interval(cfg.cache_oracle_interval.clone()),
-                move || cache_oracle(st, &symbols, &accounts),
-            )
+            loop_blocking(interval(cfg.cache_oracle_interval), move || {
+                cache_oracle(st, &symbols, &accounts)
+            })
         })
         .collect::<Vec<_>>();
 
@@ -42,20 +41,18 @@ pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
             let start = i;
             let end = min(i + 4, st.zo_state.total_collaterals as u8);
 
-            loop_blocking(
-                interval(cfg.cache_interest_interval.clone()),
-                move || cache_interest(st, start, end),
-            )
+            loop_blocking(interval(cfg.cache_interest_interval), move || {
+                cache_interest(st, start, end)
+            })
         });
 
     let update_funding_tasks = st.load_dex_markets().map(|(symbol, market)| {
         let symbol = Arc::new(symbol);
         let market = Arc::new(market);
 
-        loop_blocking(
-            interval(cfg.update_funding_interval.clone()),
-            move || update_funding(st, &symbol, &market),
-        )
+        loop_blocking(interval(cfg.update_funding_interval), move || {
+            update_funding(st, &symbol, &market)
+        })
     });
 
     futures::join!(

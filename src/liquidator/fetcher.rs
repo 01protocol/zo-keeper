@@ -1,12 +1,14 @@
-use solana_client::rpc_client::RpcClient;
-use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
-use solana_client::rpc_filter::RpcFilterType;
+use solana_client::{
+    rpc_client::RpcClient,
+    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
+    rpc_filter::RpcFilterType,
+};
 
 use solana_account_decoder::UiAccountEncoding;
 
-use solana_sdk::account::Account;
-use solana_sdk::commitment_config::CommitmentConfig;
-use solana_sdk::pubkey::Pubkey;
+use solana_sdk::{
+    account::Account, commitment_config::CommitmentConfig, pubkey::Pubkey,
+};
 
 use crate::liquidator::error::ErrorCode;
 
@@ -28,7 +30,8 @@ pub fn get_accounts(
         with_context: Some(false),
     };
 
-    let result = client.get_program_accounts_with_config(program_address, config);
+    let result =
+        client.get_program_accounts_with_config(program_address, config);
 
     match result {
         Ok(accs) => Ok(accs),

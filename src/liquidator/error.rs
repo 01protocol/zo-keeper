@@ -24,5 +24,5 @@ pub enum ErrorCode {
     TimeoutExceeded,
     CancelFailure,
     SettlementFailure,
-    NoAsks
+    NoAsks,
 }

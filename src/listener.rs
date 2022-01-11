@@ -1,7 +1,4 @@
-use crate::{
-    db,
-    {error::Error, AppState},
-};
+use crate::{db, error::Error, AppState};
 use anchor_client::solana_client::rpc_config::{
     RpcAccountInfoConfig, RpcTransactionLogsConfig, RpcTransactionLogsFilter,
 };
@@ -37,6 +34,7 @@ pub async fn run(st: &'static AppState) -> Result<(), Error> {
 
     Ok(())
 }
+
 #[tracing::instrument(skip_all, level = "error")]
 async fn scrape_logs(st: &'static AppState, db: &'static mongodb::Database) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));

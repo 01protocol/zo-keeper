@@ -1,6 +1,6 @@
 // NOTE: Modified implementation of anchor's parser because anchor's impl has a few issues
 
-use crate::{db, Error, AppState};
+use crate::{db, AppState, Error};
 use anchor_client::anchor_lang::Event;
 use futures::TryFutureExt;
 use std::time::SystemTime;

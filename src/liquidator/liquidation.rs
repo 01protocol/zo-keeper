@@ -4,28 +4,30 @@ use fixed::types::I80F48;
 
 use serum_dex::state::MarketState as SerumMarketState;
 
-use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
-use solana_sdk::{signature::Signature};
+use solana_sdk::{
+    commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature,
+};
 
 use std::collections::HashMap;
 
 use tokio::runtime::{Builder, Runtime};
 
-use zo_abi::dex::ZoDexMarket as MarketState;
-use zo_abi::{accounts as ix_accounts, instruction};
 use zo_abi::{
+    accounts as ix_accounts, dex::ZoDexMarket as MarketState, instruction,
     Cache, Control, Margin, State, WrappedI80F48, DUST_THRESHOLD,
     MAX_COLLATERALS, MAX_MARKETS,
 };
 
 use std::cell::RefCell;
 
-use tracing::{error_span, info, warn, error};
+use tracing::{error, error_span, info, warn};
 
-use crate::AppState;
-use crate::liquidator::{
-    accounts::*, error::ErrorCode, listener, margin_utils::*, math::*,
-    opts::Opts, swap, utils::*,
+use crate::{
+    liquidator::{
+        accounts::*, error::ErrorCode, listener, margin_utils::*, math::*,
+        opts::Opts, swap, utils::*,
+    },
+    AppState,
 };
 
 pub fn start(st: &'static AppState, options: Opts) {
@@ -146,10 +148,12 @@ pub fn liquidate(
     let colls = match colls {
         Ok(colls) => colls,
         Err(e) => {
-            span.in_scope(|| error!(
-                "Failed to calculate collateral for {}: {:?}",
-                margin.authority, e
-            ));
+            span.in_scope(|| {
+                error!(
+                    "Failed to calculate collateral for {}: {:?}",
+                    margin.authority, e
+                )
+            });
             return Err(ErrorCode::CollateralFailure);
         }
     };
@@ -231,8 +235,8 @@ pub fn liquidate(
         });
         // Cancel a perp position
         cancel_orders(
-            &program,
-            &payer_pubkey,
+            program,
+            payer_pubkey,
             margin_key,
             &margin.control,
             cache_key,
@@ -248,12 +252,12 @@ pub fn liquidate(
         )?;
 
         liquidate_perp_position(
-            &program,
-            &payer_pubkey,
+            program,
+            payer_pubkey,
             payer_margin_key,
             payer_control_key,
             &payer_oo[position_index],
-            &margin,
+            margin,
             margin_key,
             &open_orders,
             cache_key,
@@ -314,12 +318,11 @@ pub fn liquidate(
         };
     } else if *min_col < 0u64 {
         // Cancel a spot position
-        let quote_idx: usize;
-        if let Some((q_idx, _q_coll)) = quote_info {
-            quote_idx = q_idx;
+        let quote_idx = if let Some((q_idx, _q_coll)) = quote_info {
+            q_idx
         } else {
-            quote_idx = 0;
-        }
+            0
+        };
         span.in_scope(|| {
             info!(
                 "Liquidating {}'s {} spot position using {}",
@@ -327,8 +330,8 @@ pub fn liquidate(
             )
         });
         liquidate_spot_position(
-            &program,
-            &payer_pubkey,
+            program,
+            payer_pubkey,
             payer_margin_key,
             payer_control_key,
             margin_key,
@@ -452,8 +455,8 @@ pub fn cancel(
     let market_info = market_info[oo_index];
 
     cancel_orders(
-        &program,
-        &payer_pubkey,
+        program,
+        payer_pubkey,
         margin_key,
         &margin.control,
         cache_key,
@@ -547,8 +550,11 @@ fn liquidate_perp_position(
     market_info: &MarketState,
     dex_market: &Pubkey,
 ) -> Result<(), ErrorCode> {
-    let span =
-        error_span!("liquidate_perp_position", "{}", liqee_margin.authority.to_string());
+    let span = error_span!(
+        "liquidate_perp_position",
+        "{}",
+        liqee_margin.authority.to_string()
+    );
     // Can probably save some of these variables in the ds.
     // e.g. the state_signer and open_orders.
 
@@ -594,7 +600,9 @@ fn liquidate_perp_position(
             Ok(())
         }
         Err(e) => {
-            span.in_scope(|| error!("Failed to liquidate perp position: {:?}", e));
+            span.in_scope(|| {
+                error!("Failed to liquidate perp position: {:?}", e)
+            });
             Err(ErrorCode::LiquidationFailure)
         }
     }
@@ -647,7 +655,9 @@ fn liquidate_spot_position(
             Ok(())
         }
         Err(e) => {
-            span.in_scope(|| error!("Failed to liquidate spot position: {:?}", e));
+            span.in_scope(|| {
+                error!("Failed to liquidate spot position: {:?}", e)
+            });
             Err(ErrorCode::LiquidationFailure)
         }
     }
@@ -668,7 +678,11 @@ fn settle_bankruptcy(
     serum_dex_program: &Pubkey,
     serum_vault_signers: HashMap<usize, Pubkey>,
 ) -> Result<(), ErrorCode> {
-    let span = error_span!("settle_bankruptcy", "{}", liqee_margin.authority.to_string());
+    let span = error_span!(
+        "settle_bankruptcy",
+        "{}",
+        liqee_margin.authority.to_string()
+    );
     let mut signature_results: Vec<Result<Signature, ErrorCode>> =
         Vec::with_capacity(MAX_COLLATERALS as usize);
 
@@ -708,9 +722,9 @@ fn settle_bankruptcy(
                 state_signer,
                 liqor_margin_key,
                 liqor_control_key,
-                &serum_market,
+                serum_market,
                 serum_dex_program,
-                &serum_vault_signer,
+                serum_vault_signer,
                 i,
             )?;
         }
@@ -727,10 +741,12 @@ fn settle_bankruptcy(
                 });
             }
             Err(e) => {
-                span.in_scope(|| error!(
-                    "Failed to settle bankruptcy for asset {}: {:?}",
-                    i, e
-                ));
+                span.in_scope(|| {
+                    error!(
+                        "Failed to settle bankruptcy for asset {}: {:?}",
+                        i, e
+                    )
+                });
                 return Err(ErrorCode::SettlementFailure);
             }
         }
