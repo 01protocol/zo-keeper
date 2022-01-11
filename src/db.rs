@@ -6,7 +6,7 @@ use mongodb::{
 };
 use serde::Serialize;
 use std::time::SystemTime;
-use tracing::{debug, info, Instrument};
+use tracing::{debug, info};
 
 #[derive(Serialize)]
 pub struct Trade {
@@ -182,6 +182,16 @@ simple_update_impl! {
 }
 
 impl Trade {
+    #[tracing::instrument(
+        skip_all,
+        level = "error",
+        name = "update_trade",
+        fields(
+            symbol = symbol,
+            from = tracing::field::Empty,
+            to = tracing::field::Empty,
+        ),
+    )]
     pub async fn update(
         db: &Database,
         symbol: &str,
@@ -200,29 +210,6 @@ impl Trade {
         let trades_coll = db.collection::<Self>("trades");
         let eq_coll = db.collection::<Document>("eventQueue");
 
-        Self::execute_update(
-            &trades_coll,
-            &eq_coll,
-            buf,
-            time,
-            symbol,
-            base_mul,
-            quote_mul,
-        )
-        .await?;
-
-        Ok(())
-    }
-
-    async fn execute_update(
-        trades_coll: &Collection<Self>,
-        eq_coll: &Collection<Document>,
-        buf: &[u8],
-        time: i64,
-        symbol: &str,
-        base_mul: f64,
-        quote_mul: f64,
-    ) -> Result<(), MongoError> {
         let last_seq_num = eq_coll
             .find_one(None, None)
             .await?
@@ -234,6 +221,12 @@ impl Trade {
                 .unwrap();
 
         let new_seq_num = new_seq_num as i64;
+
+        {
+            let span = tracing::Span::current();
+            span.record("last_seq_num", &last_seq_num);
+            span.record("new_seq_num", &new_seq_num);
+        }
 
         let trades: Vec<_> = trades
             .filter(|(_, e)| e.is_fill())
@@ -282,7 +275,7 @@ impl Trade {
             .collect();
 
         insert(
-            trades_coll,
+            &trades_coll,
             &trades,
             [
                 IndexModel::builder()
@@ -295,11 +288,6 @@ impl Trade {
                 IndexModel::builder().keys(doc! { "symbol": 1 }).build(),
             ],
         )
-        .instrument(tracing::error_span!(
-            "",
-            from = last_seq_num,
-            to = new_seq_num
-        ))
         .await?;
 
         // Do this after inserting documents to ensure that

@@ -7,18 +7,25 @@ use std::{
     collections::{BTreeSet, HashMap},
     time::{Duration, Instant},
 };
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
+
+#[derive(Clone)]
+pub struct ConsumerConfig {
+    pub to_consume: usize,
+    pub max_wait: Duration,
+    pub max_queue_length: usize,
+}
 
 pub async fn run(
     st: &'static AppState,
-    to_consume: usize,
-    max_wait: Duration,
-    max_queue_length: usize,
+    cfg: ConsumerConfig,
 ) -> Result<(), Error> {
     let handles = st.load_dex_markets().map(|(symbol, mkt)| {
+        let cfg = cfg.clone();
+
         tokio::task::spawn_blocking(move || {
             let mut max_slot_height = 0;
-            let mut last_cranked_at = Instant::now() - max_wait;
+            let mut last_cranked_at = Instant::now() - cfg.max_wait;
             let mut accounts_table = HashMap::new();
 
             loop {
@@ -27,9 +34,7 @@ pub async fn run(
                     st,
                     &symbol,
                     &mkt,
-                    to_consume,
-                    max_wait,
-                    max_queue_length,
+                    &cfg,
                     &mut max_slot_height,
                     &mut last_cranked_at,
                     &mut accounts_table,
@@ -51,9 +56,7 @@ fn consume(
     st: &'static AppState,
     symbol: &str,
     market: &zo_abi::dex::ZoDexMarket,
-    to_consume: usize,
-    max_wait: Duration,
-    max_queue_length: usize,
+    cfg: &ConsumerConfig,
     max_slot_height: &mut u64,
     last_cranked_at: &mut Instant,
     // Control -> (Open Orders, Margin)
@@ -97,7 +100,9 @@ fn consume(
         return;
     }
 
-    if last_cranked_at.elapsed() < max_wait && events.len() < max_queue_length {
+    if last_cranked_at.elapsed() < cfg.max_wait
+        && events.len() < cfg.max_queue_length
+    {
         info!(
             "last cranked {}s ago and queue only has {} events, skipping",
             last_cranked_at.elapsed().as_secs(),
@@ -112,7 +117,7 @@ fn consume(
 
     for control in events.iter().map(|e| bytemuck::cast(e.control)) {
         used_control.insert(control);
-        if used_control.len() >= to_consume {
+        if used_control.len() >= cfg.to_consume {
             break;
         }
     }
@@ -179,7 +184,7 @@ fn consume(
             .program
             .request()
             .args(zo_abi::instruction::ConsumeEvents {
-                limit: to_consume as u16,
+                limit: cfg.to_consume as u16,
             })
             .accounts(zo_abi::accounts::ConsumeEvents {
                 state: st.zo_state_pubkey,

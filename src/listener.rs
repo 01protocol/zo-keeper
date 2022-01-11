@@ -1,5 +1,3 @@
-mod events;
-
 use crate::{
     db,
     {error::Error, AppState},
@@ -7,7 +5,7 @@ use crate::{
 use anchor_client::solana_client::rpc_config::{
     RpcAccountInfoConfig, RpcTransactionLogsConfig, RpcTransactionLogsFilter,
 };
-use futures::StreamExt;
+use futures::{StreamExt, TryFutureExt};
 use jsonrpc_core_client::transports::ws;
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_rpc::rpc_pubsub::RpcSolPubSubClient;
@@ -17,25 +15,29 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
-use tracing::{debug, error_span, info, warn, Instrument};
+use tracing::{debug, info, warn, Instrument};
 
 pub async fn run(st: &'static AppState) -> Result<(), Error> {
-    let db_client =
-        mongodb::Client::with_uri_str(env::var("DATABASE_URL")?).await?;
+    let db = mongodb::Client::with_uri_str(env::var("DATABASE_URL")?)
+        .await?
+        .database("main");
 
-    let db = db_client.database("main");
     let db: &'static _ = Box::leak(Box::new(db));
+
+    let listen_event_q_tasks =
+        st.load_dex_markets().map(|(symbol, dex_market)| {
+            listen_event_queue(st, db, symbol, dex_market)
+        });
 
     futures::join!(
         scrape_logs(st, db),
-        listen_event_queue(st, db),
         poll_update_funding(st, db),
+        futures::future::join_all(listen_event_q_tasks),
     );
 
     Ok(())
 }
-
-#[tracing::instrument(skip_all, level = "error", name = "scrape_logs")]
+#[tracing::instrument(skip_all, level = "error")]
 async fn scrape_logs(st: &'static AppState, db: &'static mongodb::Database) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -75,98 +77,93 @@ async fn scrape_logs(st: &'static AppState, db: &'static mongodb::Database) {
                 continue;
             }
 
-            tokio::spawn(events::process(
-                st,
-                db,
-                resp.value.logs,
-                resp.value.signature,
-            ));
+            tokio::spawn(
+                crate::events::process(
+                    st,
+                    db,
+                    resp.value.logs,
+                    resp.value.signature,
+                )
+                .instrument(tracing::Span::current()),
+            );
         }
     }
 }
 
+#[tracing::instrument(
+    skip_all,
+    level = "error",
+    name = "event_queue",
+    fields(symbol = %symbol)
+)]
 async fn listen_event_queue(
     st: &'static AppState,
     db: &'static mongodb::Database,
+    symbol: String,
+    mkt: zo_abi::dex::ZoDexMarket,
 ) {
-    let handles: Vec<_> = st
-        .load_dex_markets()
-        .map(|(symbol, dex_market)| {
-            let base_decimals = dex_market.coin_decimals as u8;
-            let quote_decimals = 6u8;
-            let event_q = dex_market.event_q.to_string();
+    let symbol = std::sync::Arc::new(symbol);
+    let event_q = mkt.event_q.to_string();
+    let base_decimals = mkt.coin_decimals as u8;
+    let quote_decimals = 6u8;
+
+    loop {
+        let sub = ws::try_connect::<RpcSolPubSubClient>(st.cluster.ws_url())
+            .unwrap()
+            .await
+            .and_then(|p| {
+                p.account_subscribe(
+                    event_q.clone(),
+                    Some(RpcAccountInfoConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        data_slice: None,
+                        commitment: None,
+                    }),
+                )
+            });
+
+        let mut sub = match sub {
+            Err(e) => {
+                let e = Error::from(e);
+                warn!("{}", e);
+                continue;
+            }
+            Ok(x) => x,
+        };
+
+        while let Some(resp) = sub.next().await {
+            debug!("got update");
+
+            let resp = match resp {
+                Ok(x) => x,
+                Err(_) => continue,
+            };
+
+            let buf = match resp.value.data {
+                UiAccountData::Binary(b, _) => base64::decode(b).unwrap(),
+                _ => panic!(),
+            };
+
+            let symbol = symbol.clone();
+            let span = tracing::Span::current();
 
             tokio::spawn(async move {
-                let span = error_span!("event_queue", symbol = symbol.as_str());
-
-                loop {
-                    let event_q = event_q.clone();
-
-                    let sub = ws::try_connect::<RpcSolPubSubClient>(
-                        st.cluster.ws_url(),
-                    )
-                    .unwrap()
-                    .await
-                    .and_then(|p| {
-                        p.account_subscribe(
-                            event_q,
-                            Some(RpcAccountInfoConfig {
-                                encoding: Some(UiAccountEncoding::Base64),
-                                data_slice: None,
-                                commitment: None,
-                            }),
-                        )
-                    });
-
-                    let mut sub = match sub {
-                        Err(e) => {
-                            let e = Error::from(e);
-                            warn!("{}", e);
-                            continue;
-                        }
-                        Ok(x) => x,
-                    };
-
-                    while let Some(resp) = sub.next().await {
-                        span.in_scope(|| info!("got update"));
-
-                        let resp = match resp {
-                            Ok(x) => x,
-                            Err(e) => {
-                                let e = Error::from(e);
-                                warn!("{}", e);
-                                continue;
-                            }
-                        };
-
-                        let buf = match resp.value.data {
-                            UiAccountData::Binary(b, _) => {
-                                base64::decode(b).unwrap()
-                            }
-                            _ => panic!(),
-                        };
-
-                        let db_res = db::Trade::update(
-                            db,
-                            &symbol,
-                            base_decimals,
-                            quote_decimals,
-                            &buf,
-                        )
-                        .instrument(span.clone())
-                        .await;
-
-                        if let Err(e) = db_res {
-                            let e = Error::from(e);
-                            warn!("{}", e);
-                        }
-                    }
-                }
-            })
-        })
-        .collect();
-
-    let _ = futures::future::join_all(handles).await;
+                db::Trade::update(
+                    db,
+                    &symbol,
+                    base_decimals,
+                    quote_decimals,
+                    &buf,
+                )
+                .instrument(span)
+                .map_err(|e| {
+                    let e = Error::from(e);
+                    warn!("{}", e);
+                })
+                .await
+            });
+        }
+    }
 }
 
 #[tracing::instrument(skip_all, level = "error", name = "update_funding")]
@@ -183,8 +180,6 @@ async fn poll_update_funding(
         .load_dex_markets()
         .map(|(s, _)| (s, AtomicU64::new(0)))
         .collect();
-
-    let prev: &'static _ = Box::leak(Box::new(prev));
 
     loop {
         interval.tick().await;

@@ -17,7 +17,7 @@ pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
         .chunks(4)
         .map(|x| {
             let (symbols, accounts): (Vec<String>, Vec<AccountMeta>) = x
-                .into_iter()
+                .iter()
                 .map(|x| {
                     let symbol = x.symbol.into();
                     let acc =

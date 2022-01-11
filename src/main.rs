@@ -68,7 +68,7 @@ enum Command {
     },
 }
 
-fn main() -> Result<(), lib::error::Error> {
+fn main() -> Result<(), lib::Error> {
     dotenv::dotenv().ok();
 
     {
@@ -171,9 +171,11 @@ fn main() -> Result<(), lib::error::Error> {
                     max_queue_length,
                 } => rt.block_on(lib::consumer::run(
                     app_state,
-                    to_consume,
-                    max_wait,
-                    max_queue_length,
+                    lib::consumer::ConsumerConfig {
+                        to_consume,
+                        max_wait,
+                        max_queue_length,
+                    },
                 ))?,
                 _ => panic!(),
             }
