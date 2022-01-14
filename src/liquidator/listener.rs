@@ -126,7 +126,12 @@ pub fn start_listener(
     let url = ws_url.to_string();
     let tx2 = tx;
     runtime.spawn(async move {
-        start_processor(&id, &url, tx2).await.unwrap();
+        match start_processor(&id, &url, tx2).await {
+            Ok(()) => (),
+            Err(_e) => {
+                unreachable!();
+            }
+        }
     });
 }
 
@@ -149,83 +154,96 @@ async fn start_processor(
     // Now for configuring accounts we care about
     let control_tx = tx.clone();
     let control_listener =
-        spawn_listener::<Control>(program_id, &client, control_tx)?;
+        spawn_listener::<Control>(program_id, &client, control_tx);
 
     let margin_tx = tx.clone();
     let margin_listener =
-        spawn_listener::<Margin>(program_id, &client, margin_tx)?;
+        spawn_listener::<Margin>(program_id, &client, margin_tx);
 
     let state_tx = tx.clone();
-    let state_listener =
-        spawn_listener::<State>(program_id, &client, state_tx)?;
+    let state_listener = spawn_listener::<State>(program_id, &client, state_tx);
 
     let cache_tx = tx.clone();
-    let cache_listener =
-        spawn_listener::<Cache>(program_id, &client, cache_tx)?;
+    let cache_listener = spawn_listener::<Cache>(program_id, &client, cache_tx);
 
-    control_listener.await.unwrap();
-    margin_listener.await.unwrap();
-    state_listener.await.unwrap();
-    cache_listener.await.unwrap();
+    control_listener.await?;
+    margin_listener.await?;
+    state_listener.await?;
+    cache_listener.await?;
 
     Ok(())
 }
 
-fn spawn_listener<T: ZeroCopy + Owner + Sync + Send>(
+async fn spawn_listener<T: ZeroCopy + Owner + Sync + Send>(
     program_id: &Pubkey,
     client: &RpcSolPubSubClient,
     tx: mpsc::Sender<Command>,
-) -> Result<tokio::task::JoinHandle<()>, ErrorCode> {
+) -> Result<(), ErrorCode> {
     let data_size: usize = mem::size_of::<T>();
 
     let accounts_config = get_program_account_config(
         data_size as u64,
         CommitmentConfig::confirmed(),
     );
-    let mut subscriber = client
-        .program_subscribe(program_id.to_string(), Some(accounts_config))
-        .map_err(|_| ErrorCode::SubscriptionFailure)?;
 
-    let tx = tx;
-    Ok(tokio::spawn(async move {
-        let span = error_span!("listener");
-        while let Some(result) = subscriber.next().await {
-            match result {
-                Ok(response) => {
-                    let keyed_account = response.value;
-                    let account = keyed_account.account;
-                    let key: Pubkey =
-                        Pubkey::from_str(&keyed_account.pubkey).unwrap();
-                    let command: Command = match account.try_into() {
-                        Ok(cmd) => cmd,
-                        Err(err) => {
-                            span.in_scope(|| error!(
+    loop {
+        // TODO: Skipper add warn!("Starting {} listener", std::any::type_name::<T>())
+        let mut subscriber = client
+            .program_subscribe(
+                program_id.to_string(),
+                Some(accounts_config.clone()),
+            )
+            .map_err(|_| ErrorCode::SubscriptionFailure)?;
+
+        let tx = tx.clone();
+
+        tokio::spawn(async move {
+            let span = error_span!("listener");
+            while let Some(result) = subscriber.next().await {
+                match result {
+                    Ok(response) => {
+                        let keyed_account = response.value;
+                        let account = keyed_account.account;
+                        let key: Pubkey =
+                            Pubkey::from_str(&keyed_account.pubkey).unwrap();
+                        let command: Command = match account.try_into() {
+                            Ok(cmd) => cmd,
+                            Err(err) => {
+                                span.in_scope(|| error!(
                                 "Got incorrect account data: {:?}, for account {}.",
                                 err,
                                 key
                             ));
-                            continue;
-                        }
-                    };
-                    let cmd: Command = update_key(command, key);
-                    match tx.send(cmd).await {
-                        Ok(()) => (),
-                        Err(_) => {
-                            span.in_scope(|| error!("Error sending command"));
-                            break;
+                                continue;
+                            }
+                        };
+                        let cmd: Command = update_key(command, key);
+                        match tx.send(cmd).await {
+                            Ok(()) => (),
+                            Err(_) => {
+                                span.in_scope(|| {
+                                    error!("Error sending command")
+                                });
+                                break;
+                            }
                         }
                     }
+                    Err(_) => span.in_scope(|| {
+                        error!("No {} account here", std::any::type_name::<T>())
+                    }),
                 }
-                Err(_) => span.in_scope(|| {
-                    error!("No {} account here", std::any::type_name::<T>())
-                }),
             }
-        }
-        span.in_scope(|| {
-            error!("{} stream closed. Panicking!", std::any::type_name::<T>())
-        });
-        panic!();
-    }))
+            span.in_scope(|| {
+                error!(
+                    "{} stream closed. Panicking!",
+                    std::any::type_name::<T>()
+                )
+            });
+            panic!();
+        }).await.map_err(|_e| {
+            // TODO: log the join error _e then
+            ErrorCode::JoinFailure})?;
+    }
 }
 
 fn update_key(command: Command, new_key: Pubkey) -> Command {

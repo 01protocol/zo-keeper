@@ -25,4 +25,6 @@ pub enum ErrorCode {
     CancelFailure,
     SettlementFailure,
     NoAsks,
+    ListenFailure,
+    JoinFailure
 }
