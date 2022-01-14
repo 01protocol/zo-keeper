@@ -10,7 +10,7 @@ use solana_sdk::{
 
 use std::collections::HashMap;
 
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Runtime;
 
 use zo_abi::{
     accounts as ix_accounts, dex::ZoDexMarket as MarketState, instruction,
@@ -20,47 +20,25 @@ use zo_abi::{
 
 use std::cell::RefCell;
 
-use tracing::{error, error_span, info, warn};
+use tracing::{error, error_span, debug, info, warn};
 
 use crate::{
     liquidator::{
-        accounts::*, error::ErrorCode, listener, margin_utils::*, math::*,
-        opts::Opts, swap, utils::*,
+        accounts::*, error::ErrorCode, margin_utils::*, math::*, opts::Opts,
+        swap, utils::*,
     },
-    AppState,
 };
 
-pub fn start(st: &'static AppState, options: Opts) {
-    //init_logger(&options.log_directory);
-    let span = error_span!("liquidator");
-    span.in_scope(|| info!("Liquidator starting..."));
-
-    span.in_scope(|| info!("Initializing database..."));
-    let database: DbWrapper = DbWrapper::new(&options, &st.program.payer());
-
-    let rt = Builder::new_multi_thread().enable_all().build().unwrap();
-
-    span.in_scope(|| info!("Starting listener..."));
-    listener::start_listener(
-        &rt,
-        &options.zo_program,
-        &options.ws_endpoint,
-        database.get_clone(),
-        &options.num_workers,
-        &options.n,
-    );
-
-    span.in_scope(|| info!("Starting liquidation loop..."));
-    liquidate_loop(rt, &st.client, database, options, st.program.payer());
-}
-
-fn liquidate_loop(
+#[tracing::instrument(skip_all, level = "error")]
+pub fn liquidate_loop(
     rt: Runtime,
     anchor_client: &Client,
     database: DbWrapper,
     opts: Opts,
     payer_pubkey: Pubkey,
 ) {
+    info!("starting...");
+
     let mut payer_margin_key: Option<Pubkey> = None;
 
     {
@@ -74,7 +52,7 @@ fn liquidate_loop(
             }
         }
     }
-    let span = error_span!("liquidator_loop");
+
     let mut last_refresh = std::time::Instant::now();
     loop {
         let loop_start = std::time::Instant::now();
@@ -88,16 +66,14 @@ fn liquidate_loop(
             &payer_margin_key.unwrap(),
         ) {
             Ok(n) => {
-                span.in_scope(|| {
-                    info!(
-                        "Checked {} accounts in {} μs",
-                        n,
-                        loop_start.elapsed().as_micros()
-                    )
-                });
+                debug!(
+                    "Checked {} accounts in {} μs",
+                    n,
+                    loop_start.elapsed().as_micros()
+                );
             }
             Err(e) => {
-                span.in_scope(|| error!("Had an oopsie-doopsie {:?}", e));
+                error!("Had an oopsie-doopsie {:?}", e);
             }
         };
 
@@ -106,11 +82,16 @@ fn liquidate_loop(
         if last_refresh.elapsed().as_secs() > 6000 {
             database.refresh_accounts(&opts, &payer_pubkey).unwrap(); // TODO: Refactor this is bad.
             last_refresh = std::time::Instant::now();
-            span.in_scope(|| info!("Refreshed account table"));
+            info!("Refreshed account table");
         }
     }
 }
 
+#[tracing::instrument(
+    skip_all,
+    level = "error",
+    fields(authority = %margin.authority),
+)]
 pub fn liquidate(
     program: &Program,
     dex_program: &Pubkey,
@@ -137,7 +118,6 @@ pub fn liquidate(
     // Go through its positions and pick the largest one.
     // Liquidate that position.
 
-    let span = error_span!("fn liquidate", "{}", margin.authority.to_string());
     // Start by sorting the collateral
     let colls = get_actual_collateral_vec(
         margin,
@@ -148,12 +128,10 @@ pub fn liquidate(
     let colls = match colls {
         Ok(colls) => colls,
         Err(e) => {
-            span.in_scope(|| {
-                error!(
-                    "Failed to calculate collateral for {}: {:?}",
-                    margin.authority, e
-                )
-            });
+            error!(
+                "Failed to calculate collateral for {}: {:?}",
+                margin.authority, e
+            );
             return Err(ErrorCode::CollateralFailure);
         }
     };
@@ -227,12 +205,10 @@ pub fn liquidate(
     let market_info = market_infos[position_index];
 
     if has_positions && -min_col <= max_position_notional {
-        span.in_scope(|| {
-            info!(
-                "Liquidating {}'s {} perp position",
-                margin.authority, position_index
-            )
-        });
+        info!(
+            "Liquidating {}'s {} perp position",
+            margin.authority, position_index
+        );
         // Cancel a perp position
         cancel_orders(
             program,
@@ -323,12 +299,10 @@ pub fn liquidate(
         } else {
             0
         };
-        span.in_scope(|| {
-            info!(
-                "Liquidating {}'s {} spot position using {}",
-                margin.authority, col_index, quote_idx
-            )
-        });
+        info!(
+            "Liquidating {}'s {} spot position using {}",
+            margin.authority, col_index, quote_idx
+        );
         liquidate_spot_position(
             program,
             payer_pubkey,
@@ -361,12 +335,10 @@ pub fn liquidate(
                 quote_idx,
             )?;
         } else {
-            span.in_scope(|| {
-                warn!(
-                    "No serum market for {}. Not swapping for {}",
-                    quote_idx, margin.authority
-                )
-            });
+            warn!(
+                "No serum market for {}. Not swapping for {}",
+                quote_idx, margin.authority
+            );
         }
         if let (Some(serum_market), Some(serum_vault_signer)) = (
             serum_markets.get(&col_index),
@@ -386,18 +358,14 @@ pub fn liquidate(
                 col_index,
             )?;
         } else {
-            span.in_scope(|| {
-                warn!(
-                    "No serum market for {}. Not swapping for {}",
-                    col_index, margin.authority
-                )
-            });
+            warn!(
+                "No serum market for {}. Not swapping for {}",
+                col_index, margin.authority
+            );
         }
     } else if let Some(_order_index) = largest_open_order(cache, control)? {
         // Must close perp open orders
-        span.in_scope(|| {
-            info!("Closing {}'s {} perp position", margin.authority, col_index)
-        });
+        info!("Closing {}'s {} perp position", margin.authority, col_index);
         cancel(
             program,
             dex_program,

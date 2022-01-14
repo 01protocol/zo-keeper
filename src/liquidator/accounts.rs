@@ -30,7 +30,7 @@ use std::{
 
 use tokio::runtime::Runtime;
 
-use tracing::{error, error_span, info};
+use tracing::{error, error_span, info, debug};
 
 use zo_abi::{
     dex::ZoDexMarket as MarketState, Cache, Control, FractionType, Margin,
@@ -117,10 +117,10 @@ impl AccountTable {
         let span =
             error_span!("account_table_new", "{}", payer_pubkey.to_string());
 
-        span.in_scope(|| info!("State size: {}", mem::size_of::<State>()));
-        span.in_scope(|| info!("Cache size: {}", mem::size_of::<Cache>()));
-        span.in_scope(|| info!("Margin size: {}", mem::size_of::<Margin>()));
-        span.in_scope(|| info!("Control size: {}", mem::size_of::<Control>()));
+        span.in_scope(|| debug!("State size: {}", mem::size_of::<State>()));
+        span.in_scope(|| debug!("Cache size: {}", mem::size_of::<Cache>()));
+        span.in_scope(|| debug!("Margin size: {}", mem::size_of::<Margin>()));
+        span.in_scope(|| debug!("Control size: {}", mem::size_of::<Control>()));
 
         let (cache, cache_key) = match get_accounts(
             &client,

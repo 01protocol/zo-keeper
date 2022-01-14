@@ -5,13 +5,6 @@ use anchor_lang::{
 
 use anchor_client::{ClientError::SolanaClientError, RequestBuilder};
 
-/*
-use log::LevelFilter;
-use log4rs::append::file::FileAppender;
-use log4rs::config::{Appender, Config, Root};
-use log4rs::encode::pattern::PatternEncoder;
-*/
-
 use solana_account_decoder::{UiAccount, UiAccountData, UiAccountEncoding};
 use solana_client::{
     client_error::{ClientError, ClientErrorKind},
@@ -25,33 +18,18 @@ use solana_sdk::{
     commitment_config::CommitmentConfig,
     pubkey::Pubkey,
     signature::Signature,
-    signer::keypair::Keypair,
 };
 
 use std::{ops::Deref, str::FromStr};
 
-use tracing::{error, error_span};
+use tracing::error;
 
 use base64::decode;
 
 use zo_abi::{Cache, OpenOrdersInfo, OracleCache, Symbol, MAX_MARKETS};
 
 use crate::liquidator::error::ErrorCode;
-/*
-pub fn init_logger(s: &str) -> () {
-    let logfile = FileAppender::builder()
-        .encoder(Box::new(PatternEncoder::new("[{d}] - {l} - {m}{n}")))
-        .build(s)
-        .unwrap();
 
-    let config = Config::builder()
-        .appender(Appender::builder().build("liqlog", Box::new(logfile)))
-        .build(Root::builder().appender("liqlog").build(LevelFilter::Info))
-        .unwrap();
-
-    log4rs::init_config(config).unwrap();
-}
-*/
 pub fn get_account_info<'a>(
     key: &'a Pubkey,
     account: &'a mut Account,
@@ -60,11 +38,15 @@ pub fn get_account_info<'a>(
     account_info
 }
 
+#[tracing::instrument(
+    skip_all,
+    level = "error",
+    fields(key = %key, ty = %std::any::type_name::<T>())
+)]
 pub fn get_type_from_account<T>(key: &Pubkey, account: &mut Account) -> T
 where
     T: ZeroCopy + Owner,
 {
-    let span = error_span!("get_type_from_account", key = %key, generic = %std::any::type_name::<T>());
     let account_info: AccountInfo<'_> = get_account_info(key, account);
     let loader: AccountLoader<'_, T> =
         AccountLoader::try_from(&account_info).unwrap();
@@ -72,14 +54,11 @@ where
     match value {
         Ok(x) => *x.deref(),
         Err(e) => {
-            span.in_scope(|| {
-                error!(
-                    "Failed to get type {:?} from account {}. Error: {:?}.",
-                    std::any::type_name::<T>(),
-                    key,
-                    e
-                )
-            });
+            error!(
+                "Failed to get type from {}: {:?}.",
+                key,
+                e
+            );
             panic!()
         }
     }
@@ -152,12 +131,12 @@ pub fn get_program_account_config(
     }
 }
 
+#[tracing::instrument(skip_all, level = "error")]
 pub fn vec_from_data(data: UiAccountData) -> Vec<u8> {
-    let span = error_span!("vec_from_data");
     if let UiAccountData::Binary(data, _encoding) = data {
         decode(data).unwrap()
     } else {
-        span.in_scope(|| error!("Expected binary data"));
+        error!("Expected binary data");
         panic!();
     }
 }
@@ -192,11 +171,6 @@ pub fn get_oo_keys(
     keys
 }
 
-pub fn read_keypair_file(s: &str) -> Result<Keypair, ErrorCode> {
-    solana_sdk::signature::read_keypair_file(s)
-        .map_err(|_| ErrorCode::InvalidKeypairFile)
-}
-
 pub fn is_right_remainder(key: &Pubkey, modulus: &u8, remainder: &u8) -> bool {
     /*
      * This should be used strictly for control accounts.
@@ -224,25 +198,15 @@ pub fn array_to_le_bytes(array: &[u64; 4]) -> [u8; 32] {
     bytes
 }
 
-pub fn array_to_be_bytes(array: &[u64; 4]) -> [u8; 32] {
-    let mut bytes = [0u8; 32];
-    for (i, x) in array.iter().enumerate() {
-        let idx = 3 - i;
-        bytes[idx * 8..(idx + 1) * 8].copy_from_slice(&x.to_be_bytes());
-    }
-    bytes
-}
-
 pub fn array_to_pubkey(array: &[u64; 4]) -> Pubkey {
     Pubkey::new(&array_to_le_bytes(array))
 }
 
+#[tracing::instrument(skip_all, level = "error")]
 pub fn retry_send<'a>(
     make_builder: impl Fn() -> RequestBuilder<'a>,
     retries: usize,
 ) -> Result<Signature, ErrorCode> {
-    let span = error_span!("retry_send");
-
     let mut last_error: Option<_> = None;
 
     for _i in 0..retries {
@@ -271,12 +235,12 @@ pub fn retry_send<'a>(
                 }),
         }) = e
         {
-            span.in_scope(|| error!("Failed to send request. {:#?}", d));
+            error!("Failed to send request. {:?}", d);
         } else {
-            span.in_scope(|| error!("Failed to send request {:#?}", e));
+            error!("Failed to send request {:?}", e);
         }
     } else {
-        span.in_scope(|| error!("Failed to send request {:#?}", ix));
+        error!("Failed to send request {:?}", ix);
     }
 
     Err(ErrorCode::TimeoutExceeded)

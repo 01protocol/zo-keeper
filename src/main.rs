@@ -136,9 +136,6 @@ fn main() -> Result<(), lib::Error> {
         Command::Liquidator { num_workers, n } => {
             lib::liquidator::run(
                 app_state,
-                zo_abi::dex::ID,
-                zo_abi::ID,
-                zo_abi::serum::ID,
                 num_workers,
                 n,
             )?;
@@ -186,6 +183,5 @@ fn main() -> Result<(), lib::Error> {
 }
 
 fn parse_seconds(s: &str) -> Result<Duration, std::num::ParseFloatError> {
-    use std::str::FromStr;
-    f64::from_str(s).map(Duration::from_secs_f64)
+    <f64 as std::str::FromStr>::from_str(s).map(Duration::from_secs_f64)
 }

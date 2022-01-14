@@ -268,7 +268,7 @@ impl Trade {
                     size,
                     is_maker: e.is_maker(),
                     control: e.control.to_string(),
-                    order_id: format!("0x{:x}", { e.order_id }),
+                    order_id: format!("{:#x}", { e.order_id }),
                     seq_num: seq_num as i64,
                 }
             })

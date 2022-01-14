@@ -17,7 +17,7 @@ use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
 
 use std::{mem, str::FromStr};
 
-use tracing::{error, error_span, info};
+use tracing::{debug, error, error_span, info, warn};
 
 use zo_abi::{Cache, Control, Margin, State};
 
@@ -73,15 +73,16 @@ pub fn start_listener(
     modulus: &u8,
     remainder: &u8,
 ) {
+    let span = error_span!("listener");
+    span.in_scope(|| info!("starting..."));
     let (tx, mut rx) = get_channel(1024);
     let modulus = *modulus;
     let remainder = *remainder;
     runtime.spawn(async move {
-        let span = error_span!("listener");
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 Command::ControlChange { key, control } => {
-                    span.in_scope(|| info!("Got control data {:?}", key));
+                    span.in_scope(|| debug!("Got control data {:?}", key));
                     if !is_right_remainder(&key, &modulus, &remainder) {
                         continue;
                     }
@@ -91,7 +92,7 @@ pub fn start_listener(
                     db.update_control(&key, &control_acc);
                 }
                 Command::MarginChange { key, margin } => {
-                    span.in_scope(|| info!("Got margin data {:?}", key));
+                    span.in_scope(|| debug!("Got margin data {:?}", key));
                     let margin_acc: Margin =
                         get_type_from_ui_account::<Margin>(&key, &margin);
                     if !is_right_remainder(
@@ -105,14 +106,14 @@ pub fn start_listener(
                     db.update_margin(&key, &margin_acc);
                 }
                 Command::CacheChange { key, cache } => {
-                    span.in_scope(|| info!("Got cache data {:?}", key));
+                    span.in_scope(|| debug!("Got cache data {:?}", key));
                     let mut db = db.lock().unwrap();
                     let cache_acc: Cache =
                         get_type_from_ui_account::<Cache>(&key, &cache);
                     db.update_cache(&cache_acc);
                 }
                 Command::StateChange { key, state } => {
-                    span.in_scope(|| info!("Got state data {:?}", key));
+                    span.in_scope(|| debug!("Got state data {:?}", key));
                     let mut db = db.lock().unwrap();
                     let state_acc: State =
                         get_type_from_ui_account::<State>(&key, &state);
@@ -187,7 +188,6 @@ async fn spawn_listener<T: ZeroCopy + Owner + Sync + Send>(
     );
 
     loop {
-        // TODO: Skipper add warn!("Starting {} listener", std::any::type_name::<T>())
         let mut subscriber = client
             .program_subscribe(
                 program_id.to_string(),
@@ -240,9 +240,10 @@ async fn spawn_listener<T: ZeroCopy + Owner + Sync + Send>(
                 )
             });
             panic!();
-        }).await.map_err(|_e| {
-            // TODO: log the join error _e then
-            ErrorCode::JoinFailure})?;
+        }).await.map_err(|e| {
+            warn!("stream closed: {}", e);
+            ErrorCode::JoinFailure
+        })?;
     }
 }
 
