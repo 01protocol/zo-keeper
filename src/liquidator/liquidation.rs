@@ -410,7 +410,7 @@ pub fn cancel(
         order_index
     } else {
         span.in_scope(|| {
-            info!("No open orders to cancel for {}", margin.authority)
+            debug!("No open orders to cancel for {}", margin.authority)
         });
         return Ok(());
     };

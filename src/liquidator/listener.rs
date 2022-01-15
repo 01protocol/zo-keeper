@@ -75,7 +75,7 @@ pub fn start_listener(
 ) {
     let span = error_span!("listener");
     span.in_scope(|| info!("starting..."));
-    let (tx, mut rx) = get_channel(1024);
+    let (tx, mut rx) = mpsc::channel::<Command>(1024);
     let modulus = *modulus;
     let remainder = *remainder;
     runtime.spawn(async move {
@@ -127,19 +127,8 @@ pub fn start_listener(
     let url = ws_url.to_string();
     let tx2 = tx;
     runtime.spawn(async move {
-        match start_processor(&id, &url, tx2).await {
-            Ok(()) => (),
-            Err(_e) => {
-                unreachable!();
-            }
-        }
+        start_processor(&id, &url, tx2).await;
     });
-}
-
-pub fn get_channel(
-    buffer_size: usize,
-) -> (mpsc::Sender<Command>, mpsc::Receiver<Command>) {
-    mpsc::channel(buffer_size)
 }
 
 // Should have a fn for listening, one for processing.
@@ -147,39 +136,43 @@ async fn start_processor(
     program_id: &Pubkey,
     ws_endpoint: &str,
     tx: mpsc::Sender<Command>,
-) -> Result<(), ErrorCode> {
-    let connection = ws::try_connect::<RpcSolPubSubClient>(ws_endpoint)
-        .map_err(|_| ErrorCode::ConnectionFailure)?;
-    let client = connection.await.map_err(|_| ErrorCode::EndpointFailure)?;
+) -> ! {
+    let client = loop {
+        match ws::try_connect::<RpcSolPubSubClient>(ws_endpoint) {
+            Ok(x) => match x.await {
+                Ok(x) => break x,
+                Err(e) => {
+                    warn!("{0}: {0:?}", e);
+                    continue;
+                }
+            },
+            Err(e) => {
+                warn!("{0}: {0:?}", e);
+                continue;
+            }
+        }
+    };
 
-    // Now for configuring accounts we care about
-    let control_tx = tx.clone();
-    let control_listener =
-        spawn_listener::<Control>(program_id, &client, control_tx);
+    tokio::join!(
+        spawn_listener::<Control>(program_id, &client, tx.clone()),
+        spawn_listener::<Margin>(program_id, &client, tx.clone()),
+        spawn_listener::<State>(program_id, &client, tx.clone()),
+        spawn_listener::<Cache>(program_id, &client, tx),
+    );
 
-    let margin_tx = tx.clone();
-    let margin_listener =
-        spawn_listener::<Margin>(program_id, &client, margin_tx);
-
-    let state_tx = tx.clone();
-    let state_listener = spawn_listener::<State>(program_id, &client, state_tx);
-
-    let cache_tx = tx.clone();
-    let cache_listener = spawn_listener::<Cache>(program_id, &client, cache_tx);
-
-    control_listener.await?;
-    margin_listener.await?;
-    state_listener.await?;
-    cache_listener.await?;
-
-    Ok(())
+    unreachable!()
 }
 
+#[tracing::instrument(
+    skip_all,
+    level = "error",
+    fields(ty = %std::any::type_name::<T>())
+)]
 async fn spawn_listener<T: ZeroCopy + Owner + Sync + Send>(
     program_id: &Pubkey,
     client: &RpcSolPubSubClient,
     tx: mpsc::Sender<Command>,
-) -> Result<(), ErrorCode> {
+) {
     let data_size: usize = mem::size_of::<T>();
 
     let accounts_config = get_program_account_config(
@@ -188,62 +181,53 @@ async fn spawn_listener<T: ZeroCopy + Owner + Sync + Send>(
     );
 
     loop {
-        let mut subscriber = client
-            .program_subscribe(
-                program_id.to_string(),
-                Some(accounts_config.clone()),
-            )
-            .map_err(|_| ErrorCode::SubscriptionFailure)?;
+        debug!("connecting...");
 
-        let tx = tx.clone();
+        let subscriber = client.program_subscribe(
+            program_id.to_string(),
+            Some(accounts_config.clone()),
+        );
 
-        tokio::spawn(async move {
-            let span = error_span!("listener");
-            while let Some(result) = subscriber.next().await {
-                match result {
-                    Ok(response) => {
-                        let keyed_account = response.value;
-                        let account = keyed_account.account;
-                        let key: Pubkey =
-                            Pubkey::from_str(&keyed_account.pubkey).unwrap();
-                        let command: Command = match account.try_into() {
-                            Ok(cmd) => cmd,
-                            Err(err) => {
-                                span.in_scope(|| error!(
+        let mut subscriber = match subscriber {
+            Ok(x) => x,
+            Err(e) => {
+                warn!("failed to connect: {0}: {0:?}", e);
+                continue;
+            }
+        };
+
+        while let Some(result) = subscriber.next().await {
+            match result {
+                Ok(response) => {
+                    let keyed_account = response.value;
+                    let account = keyed_account.account;
+                    let key: Pubkey =
+                        Pubkey::from_str(&keyed_account.pubkey).unwrap();
+                    let command: Command = match account.try_into() {
+                        Ok(cmd) => cmd,
+                        Err(err) => {
+                            error!(
                                 "Got incorrect account data: {:?}, for account {}.",
                                 err,
                                 key
-                            ));
-                                continue;
-                            }
-                        };
-                        let cmd: Command = update_key(command, key);
-                        match tx.send(cmd).await {
-                            Ok(()) => (),
-                            Err(_) => {
-                                span.in_scope(|| {
-                                    error!("Error sending command")
-                                });
-                                break;
-                            }
+                            );
+                            continue;
+                        }
+                    };
+                    let cmd: Command = update_key(command, key);
+                    match tx.send(cmd).await {
+                        Ok(()) => (),
+                        Err(_) => {
+                            error!("Error sending command");
+                            break;
                         }
                     }
-                    Err(_) => span.in_scope(|| {
-                        error!("No {} account here", std::any::type_name::<T>())
-                    }),
                 }
+                Err(_) => debug!("wrong account type"),
             }
-            span.in_scope(|| {
-                error!(
-                    "{} stream closed. Panicking!",
-                    std::any::type_name::<T>()
-                )
-            });
-            panic!();
-        }).await.map_err(|e| {
-            warn!("stream closed: {}", e);
-            ErrorCode::JoinFailure
-        })?;
+        }
+
+        warn!("disconnect");
     }
 }
 
