@@ -10,7 +10,6 @@
 use anchor_client::{Client, Program};
 
 use fixed::types::I80F48;
-use futures::future::join_all;
 
 use serum_dex::state::{
     Market as SerumMarket, MarketState as SerumMarketState,
@@ -28,9 +27,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use tokio::runtime::Runtime;
-
-use tracing::{error, error_span, info, debug};
+use tracing::{debug, error, error_span, info};
 
 use zo_abi::{
     dex::ZoDexMarket as MarketState, Cache, Control, FractionType, Margin,
@@ -91,8 +88,8 @@ impl AccountTable {
             let account = get_type_from_account::<Margin>(&key, &mut margin);
             if is_right_remainder(
                 &account.control,
-                &options.num_workers,
-                &options.n,
+                options.num_workers,
+                options.n,
             ) || account.authority.eq(payer_pubkey)
             {
                 margin_table.insert(key, account);
@@ -107,7 +104,7 @@ impl AccountTable {
         .unwrap()
         {
             let account = get_type_from_account::<Control>(&key, &mut control);
-            if is_right_remainder(&key, &options.num_workers, &options.n)
+            if is_right_remainder(&key, options.num_workers, options.n)
                 || account.authority.eq(payer_pubkey)
             {
                 control_table.insert(key, account);
@@ -279,23 +276,23 @@ impl AccountTable {
         self.size = new_table.size;
     }
 
-    pub fn update_margin(&mut self, key: &Pubkey, account: &Margin) {
-        self.margin_table.insert(*key, *account);
+    pub fn update_margin(&mut self, key: Pubkey, account: Margin) {
+        self.margin_table.insert(key, account);
     }
 
-    pub fn update_control(&mut self, key: &Pubkey, account: &Control) {
-        match self.control_table.insert(*key, *account) {
+    pub fn update_control(&mut self, key: Pubkey, account: Control) {
+        match self.control_table.insert(key, account) {
             Some(_) => (),
             None => self.size += 1,
         }
     }
 
-    pub fn update_cache(&mut self, cache: &Cache) {
-        self.cache = *cache;
+    pub fn update_cache(&mut self, cache: Cache) {
+        self.cache = cache;
     }
 
-    pub fn update_state(&mut self, state: &State) {
-        self.state = *state;
+    pub fn update_state(&mut self, state: State) {
+        self.state = state;
     }
 
     pub fn size(&self) -> u64 {
@@ -322,6 +319,7 @@ impl AccountTable {
 
 pub type Db = Arc<Mutex<AccountTable>>;
 
+#[derive(Clone)]
 pub struct DbWrapper {
     db: Db,
 }
@@ -333,9 +331,8 @@ impl DbWrapper {
         }
     }
 
-    pub fn check_all_accounts(
+    pub async fn check_all_accounts(
         &self,
-        runtime: &Runtime,
         anchor_client: &Client,
         program_id: &Pubkey,
         dex_program: &Pubkey,
@@ -343,6 +340,29 @@ impl DbWrapper {
         payer_pubkey: &Pubkey,
         payer_margin_key: &Pubkey,
     ) -> Result<u64, ErrorCode> {
+        let (size, handles) = self.check_all_accounts_aux(
+            anchor_client,
+            program_id,
+            dex_program,
+            serum_dex_program,
+            payer_pubkey,
+            payer_margin_key,
+        )?;
+        match futures::future::try_join_all(handles).await {
+            Ok(_) => Ok(size),
+            Err(_) => Err(ErrorCode::LiquidationFailure),
+        }
+    }
+
+    pub fn check_all_accounts_aux(
+        &self,
+        anchor_client: &Client,
+        program_id: &Pubkey,
+        dex_program: &Pubkey,
+        serum_dex_program: &Pubkey,
+        payer_pubkey: &Pubkey,
+        payer_margin_key: &Pubkey,
+    ) -> Result<(u64, Vec<tokio::task::JoinHandle<()>>), ErrorCode> {
         let db_clone = self.get_clone();
         let db: &mut MutexGuard<AccountTable> =
             &mut db_clone.lock().map_err(|_| ErrorCode::LockFailure)?;
@@ -358,12 +378,8 @@ impl DbWrapper {
              *   4. Cancel that position
              * In other words, this performs only a single position on all accounts.
              */
-            let (cancel_orders, liquidate) = DbWrapper::is_liquidatable(
-                &margin,
-                db,
-                &db.state.clone(),
-                &db.cache.clone(),
-            )?;
+            let (cancel_orders, liquidate) =
+                DbWrapper::is_liquidatable(&margin, &db, &db.state, &db.cache)?;
             if liquidate {
                 span.in_scope(|| {
                     info!(
@@ -400,7 +416,7 @@ impl DbWrapper {
 
                 // TODO: Refactor to have a struct for this, right now it's a mess
                 let span_clone = span.clone();
-                let handle = runtime.spawn(async move {
+                let handle = tokio::task::spawn_blocking(move || {
                     let result = liquidation::liquidate(
                         &program,
                         &dex_program,
@@ -452,7 +468,7 @@ impl DbWrapper {
                 let market_state = db.market_state.clone();
 
                 let span_clone = span.clone();
-                let handle = runtime.spawn(async move {
+                let handle = tokio::task::spawn_blocking(move || {
                     let result = liquidation::cancel(
                         &program,
                         &dex_program,
@@ -484,19 +500,12 @@ impl DbWrapper {
             }
         }
 
-        for result in runtime.block_on(join_all(handles)) {
-            match result {
-                Ok(()) => (),
-                Err(_) => return Err(ErrorCode::LiquidationFailure),
-            }
-        }
-
-        Ok(db.size())
+        Ok((db.size(), handles))
     }
 
     fn is_liquidatable(
         margin: &Margin,
-        table: &MutexGuard<AccountTable>,
+        table: &AccountTable,
         state: &State,
         cache: &Cache,
     ) -> Result<(bool, bool), ErrorCode> {

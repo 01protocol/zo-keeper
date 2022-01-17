@@ -11,11 +11,11 @@ mod utils;
 
 use crate::{AppState, Error};
 
-pub fn run(st: &'static AppState, num_workers: u8, n: u8) -> Result<(), Error> {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+pub async fn run(
+    st: &'static AppState,
+    num_workers: u8,
+    n: u8,
+) -> Result<(), Error> {
     let options = self::opts::Opts {
         cluster: st.cluster.clone(),
         http_endpoint: st.cluster.url().to_string(),
@@ -28,22 +28,28 @@ pub fn run(st: &'static AppState, num_workers: u8, n: u8) -> Result<(), Error> {
     };
     let database = accounts::DbWrapper::new(&options, &st.program.payer());
 
-    self::listener::start_listener(
-        &rt,
-        &options.zo_program,
-        &options.ws_endpoint,
-        database.get_clone(),
-        &options.num_workers,
-        &options.n,
-    );
+    let options: &'static _ = Box::leak(Box::new(options));
 
-    self::liquidation::liquidate_loop(
-        rt,
+    let f = tokio::spawn(self::listener::start_listener(
+        &zo_abi::ID,
+        st.cluster.ws_url().to_string(),
+        database.clone(),
+        num_workers,
+        n,
+    ));
+
+    let g = tokio::spawn(self::liquidation::liquidate_loop(
         &st.client,
         database,
-        options,
+        options.clone(),
         st.program.payer(),
-    );
+    ));
+
+    // Propagate panic.
+    tokio::select! {
+        t = f => t.unwrap(),
+        t = g => t.unwrap(),
+    };
 
     Ok(())
 }

@@ -132,51 +132,40 @@ fn main() -> Result<(), lib::Error> {
 
     let app_state: &'static _ = Box::leak(Box::new(app_state));
 
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
     match command {
         Command::Liquidator { num_workers, n } => {
-            lib::liquidator::run(
-                app_state,
-                num_workers,
-                n,
-            )?;
+            rt.block_on(lib::liquidator::run(app_state, num_workers, n))?;
         }
-        c => {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-
-            match c {
-                Command::Crank {
-                    cache_oracle_interval,
-                    cache_interest_interval,
-                    update_funding_interval,
-                } => rt.block_on(lib::crank::run(
-                    app_state,
-                    lib::crank::CrankConfig {
-                        cache_oracle_interval,
-                        cache_interest_interval,
-                        update_funding_interval,
-                    },
-                ))?,
-                Command::Listener {} => {
-                    rt.block_on(lib::listener::run(app_state))?
-                }
-                Command::Consumer {
-                    to_consume,
-                    max_wait,
-                    max_queue_length,
-                } => rt.block_on(lib::consumer::run(
-                    app_state,
-                    lib::consumer::ConsumerConfig {
-                        to_consume,
-                        max_wait,
-                        max_queue_length,
-                    },
-                ))?,
-                _ => panic!(),
-            }
-        }
+        Command::Crank {
+            cache_oracle_interval,
+            cache_interest_interval,
+            update_funding_interval,
+        } => rt.block_on(lib::crank::run(
+            app_state,
+            lib::crank::CrankConfig {
+                cache_oracle_interval,
+                cache_interest_interval,
+                update_funding_interval,
+            },
+        ))?,
+        Command::Listener {} => rt.block_on(lib::listener::run(app_state))?,
+        Command::Consumer {
+            to_consume,
+            max_wait,
+            max_queue_length,
+        } => rt.block_on(lib::consumer::run(
+            app_state,
+            lib::consumer::ConsumerConfig {
+                to_consume,
+                max_wait,
+                max_queue_length,
+            },
+        ))?,
     };
 
     Ok(())

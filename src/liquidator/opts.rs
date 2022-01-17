@@ -5,7 +5,7 @@ use clap::Parser;
 use solana_sdk::pubkey::Pubkey;
 
 /// Program to find and liquidate accounts on the 01 dex
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[clap(name = "liquidator")]
 pub struct Opts {
     /// The cluster to be used

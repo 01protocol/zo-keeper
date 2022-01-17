@@ -10,8 +10,6 @@ use solana_sdk::{
 
 use std::collections::HashMap;
 
-use tokio::runtime::Runtime;
-
 use zo_abi::{
     accounts as ix_accounts, dex::ZoDexMarket as MarketState, instruction,
     Cache, Control, Margin, State, WrappedI80F48, DUST_THRESHOLD,
@@ -20,18 +18,15 @@ use zo_abi::{
 
 use std::cell::RefCell;
 
-use tracing::{error, error_span, debug, info, warn};
+use tracing::{debug, error, error_span, info, warn};
 
-use crate::{
-    liquidator::{
-        accounts::*, error::ErrorCode, margin_utils::*, math::*, opts::Opts,
-        swap, utils::*,
-    },
+use crate::liquidator::{
+    accounts::*, error::ErrorCode, margin_utils::*, math::*, opts::Opts, swap,
+    utils::*,
 };
 
 #[tracing::instrument(skip_all, level = "error")]
-pub fn liquidate_loop(
-    rt: Runtime,
+pub async fn liquidate_loop(
     anchor_client: &Client,
     database: DbWrapper,
     opts: Opts,
@@ -54,17 +49,25 @@ pub fn liquidate_loop(
     }
 
     let mut last_refresh = std::time::Instant::now();
+    let mut interval =
+        tokio::time::interval(std::time::Duration::from_millis(250));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
+        interval.tick().await;
+
         let loop_start = std::time::Instant::now();
-        match database.check_all_accounts(
-            &rt,
-            anchor_client,
-            &opts.zo_program,
-            &opts.dex_program,
-            &opts.serum_dex_program,
-            &payer_pubkey,
-            &payer_margin_key.unwrap(),
-        ) {
+        match database
+            .check_all_accounts(
+                anchor_client,
+                &opts.zo_program,
+                &opts.dex_program,
+                &opts.serum_dex_program,
+                &payer_pubkey,
+                &payer_margin_key.unwrap(),
+            )
+            .await
+        {
             Ok(n) => {
                 debug!(
                     "Checked {} accounts in {} μs",
@@ -76,8 +79,6 @@ pub fn liquidate_loop(
                 error!("Had an oopsie-doopsie {:?}", e);
             }
         };
-
-        std::thread::sleep(std::time::Duration::from_millis(250));
 
         if last_refresh.elapsed().as_secs() > 6000 {
             database.refresh_accounts(&opts, &payer_pubkey).unwrap(); // TODO: Refactor this is bad.

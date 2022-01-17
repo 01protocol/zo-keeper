@@ -5,7 +5,7 @@ use anchor_lang::{
 
 use anchor_client::{ClientError::SolanaClientError, RequestBuilder};
 
-use solana_account_decoder::{UiAccount, UiAccountData, UiAccountEncoding};
+use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_client::{
     client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
@@ -14,13 +14,11 @@ use solana_client::{
     rpc_request::RpcError,
 };
 use solana_sdk::{
-    account::{Account, WritableAccount},
-    commitment_config::CommitmentConfig,
-    pubkey::Pubkey,
+    account::Account, commitment_config::CommitmentConfig, pubkey::Pubkey,
     signature::Signature,
 };
 
-use std::{ops::Deref, str::FromStr};
+use std::ops::Deref;
 
 use tracing::error;
 
@@ -54,35 +52,9 @@ where
     match value {
         Ok(x) => *x.deref(),
         Err(e) => {
-            error!(
-                "Failed to get type from {}: {:?}.",
-                key,
-                e
-            );
+            error!("Failed to get type from {}: {:?}.", key, e);
             panic!()
         }
-    }
-}
-
-pub fn get_type_from_ui_account<T>(key: &Pubkey, account: &UiAccount) -> T
-where
-    T: ZeroCopy + Owner,
-{
-    let mut account: Account = Account::create(
-        account.lamports,
-        vec_from_data(account.data.clone()),
-        Pubkey::from_str(&account.owner.clone()).unwrap(),
-        account.executable,
-        account.rent_epoch,
-    );
-
-    let account_info: AccountInfo<'_> = get_account_info(key, &mut account);
-    let loader: AccountLoader<'_, T> =
-        AccountLoader::try_from(&account_info).unwrap();
-    let value = loader.load();
-    match value {
-        Ok(x) => *x.deref(),
-        Err(e) => panic!("{:?}", e),
     }
 }
 
@@ -110,24 +82,6 @@ pub fn get_accounts(
     match result {
         Ok(accs) => Ok(accs),
         Err(_) => Err(ErrorCode::FetchAccountFailure),
-    }
-}
-
-pub fn get_program_account_config(
-    data_size: u64,
-    commitment_config: CommitmentConfig,
-) -> RpcProgramAccountsConfig {
-    let filters: Vec<RpcFilterType> =
-        vec![RpcFilterType::DataSize(data_size as u64 + 8u64)];
-
-    RpcProgramAccountsConfig {
-        filters: Some(filters),
-        account_config: RpcAccountInfoConfig {
-            encoding: Some(UiAccountEncoding::Base64),
-            data_slice: None,
-            commitment: Some(commitment_config),
-        },
-        with_context: Some(false),
     }
 }
 
@@ -171,7 +125,7 @@ pub fn get_oo_keys(
     keys
 }
 
-pub fn is_right_remainder(key: &Pubkey, modulus: &u8, remainder: &u8) -> bool {
+pub fn is_right_remainder(key: &Pubkey, modulus: u8, remainder: u8) -> bool {
     /*
      * This should be used strictly for control accounts.
      * For margin accounts, check it on the control field.
@@ -187,7 +141,7 @@ pub fn is_right_remainder(key: &Pubkey, modulus: &u8, remainder: &u8) -> bool {
         sum += byte % modulus;
     }
 
-    sum % modulus == *remainder
+    sum % modulus == remainder
 }
 
 pub fn array_to_le_bytes(array: &[u64; 4]) -> [u8; 32] {

@@ -3,9 +3,6 @@ pub enum ErrorCode {
     FetchAccountFailure,
     IncorrectData,
     InvalidResult,
-    ConnectionFailure,
-    EndpointFailure,
-    SubscriptionFailure,
     InvalidProgramId,
     OracleDoesNotExist,
     MathFailure,
@@ -26,5 +23,4 @@ pub enum ErrorCode {
     SettlementFailure,
     NoAsks,
     ListenFailure,
-    JoinFailure
 }
