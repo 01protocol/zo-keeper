@@ -4,12 +4,12 @@ use anchor_client::{
     },
     Client, Cluster,
 };
-use clap::{Parser, Subcommand};
+use clap::{AppSettings, Parser, Subcommand};
 use std::{env, time::Duration};
 use zo_keeper as lib;
 
 #[derive(Parser)]
-#[clap(term_width = 72)]
+#[clap(term_width = 72, setting(AppSettings::DisableHelpSubcommand))]
 struct Cli {
     /// Name of cluster or its RPC endpoint.
     #[clap(short, long, env = "SOLANA_CLUSTER", default_value = "devnet")]
@@ -30,20 +30,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run caching and update funding instructions
     Crank {
-        // Interval for cache oracle, in seconds
+        /// Interval for cache oracle, in seconds
         #[clap(long, default_value = "2", parse(try_from_str = parse_seconds))]
         cache_oracle_interval: Duration,
 
-        // Interval for cache interest, in seconds
+        /// Interval for cache interest, in seconds
         #[clap(long, default_value = "5", parse(try_from_str = parse_seconds))]
         cache_interest_interval: Duration,
 
-        // Interval for update funding, in seconds
+        /// Interval for update funding, in seconds
         #[clap(long, default_value = "15", parse(try_from_str = parse_seconds))]
         update_funding_interval: Duration,
     },
+
+    /// Listen and store events into a database
     Listener {},
+
+    /// Consume events for each market
     Consumer {
         /// Events to consume each iteration
         #[clap(long, default_value = "8")]
@@ -57,14 +62,16 @@ enum Command {
         #[clap(long, default_value = "1")]
         max_queue_length: usize,
     },
-    Liquidator {
-        /// The number of bots that are running
-        #[clap(long, default_value = "1")]
-        num_workers: u8,
 
-        /// The thread this bot is responsible for
+    /// Find liquidatable accounts and liquidate them
+    Liquidator {
+        /// The total number of bots run
+        #[clap(long, default_value = "1")]
+        worker_count: u8,
+
+        /// The slice of addresses this bot is responsible for
         #[clap(long, default_value = "0")]
-        n: u8,
+        worker_index: u8,
     },
 }
 
@@ -138,8 +145,15 @@ fn main() -> Result<(), lib::Error> {
         .unwrap();
 
     match command {
-        Command::Liquidator { num_workers, n } => {
-            rt.block_on(lib::liquidator::run(app_state, num_workers, n))?;
+        Command::Liquidator {
+            worker_count,
+            worker_index,
+        } => {
+            rt.block_on(lib::liquidator::run(
+                app_state,
+                worker_count,
+                worker_index,
+            ))?;
         }
         Command::Crank {
             cache_oracle_interval,

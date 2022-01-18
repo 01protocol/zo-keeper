@@ -11,10 +11,10 @@ use crate::{AppState, Error};
 
 pub async fn run(
     st: &'static AppState,
-    num_workers: u8,
-    n: u8,
+    worker_count: u8,
+    worker_index: u8,
 ) -> Result<(), Error> {
-    let database = accounts::DbWrapper::new(st, n, num_workers);
+    let database = accounts::DbWrapper::new(st, worker_index, worker_count);
 
     let f = tokio::spawn(self::listener::start_listener(
         &zo_abi::ID,
