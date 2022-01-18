@@ -7,37 +7,27 @@
  * Let's start by storing everything to make sure the logic is good,
  * then deal with compression.
 */
+use crate::liquidator::{
+    error::ErrorCode, liquidation, margin_utils::*, math::*, utils::*,
+};
 use anchor_client::{Client, Program};
-
 use fixed::types::I80F48;
-
 use serum_dex::state::{
     Market as SerumMarket, MarketState as SerumMarketState,
 };
-
-use solana_client::rpc_client::RpcClient;
-use solana_program::pubkey::Pubkey as SolanaPubkey;
 use solana_sdk::pubkey::Pubkey;
-
 use std::{
     cell::RefCell,
-    collections::{hash_map::IntoIter, HashMap},
-    mem,
+    collections::HashMap,
     ops::Deref,
     sync::{Arc, Mutex, MutexGuard},
 };
-
-use tracing::{debug, error, error_span, info};
-
+use tracing::{error, error_span, info};
 use zo_abi::{
     dex::ZoDexMarket as MarketState, Cache, Control, FractionType, Margin,
     State, WrappedI80F48, MAX_MARKETS,
 };
 
-use crate::liquidator::{
-    error::ErrorCode, liquidation, margin_utils::*, math::*, opts::Opts,
-    utils::*,
-};
 // Let's start with a simple hashtable
 // It has to be sharable.
 pub struct AccountTable {
@@ -62,153 +52,84 @@ pub struct AccountTable {
     // The serum markets for swapping
     serum_markets: HashMap<usize, SerumMarketState>,
     serum_vault_signers: HashMap<usize, Pubkey>,
-    // The number of stored accounts
-    // Only track number of controls
-    size: u64,
+
+    payer_key: Pubkey,
+    payer_margin_key: Pubkey,
+    payer_margin: Margin,
+    payer_control_key: Pubkey,
+    payer_control: Control,
+
+    worker_count: u8,
+    worker_index: u8,
 }
 
 impl AccountTable {
-    pub fn new(options: &Opts, payer_pubkey: &Pubkey) -> Self {
+    pub fn new(
+        st: &crate::AppState,
+        worker_index: u8,
+        worker_count: u8,
+    ) -> Self {
         // This fetches all on-chain accounts for a start
         // Assumes that the dex is started, i.e. there's a cache
         // Also need to load market state info.
 
-        let client = RpcClient::new(options.http_endpoint.clone());
-        let mut size: u64 = 0;
-        let mut margin_table = HashMap::new();
-        let mut control_table = HashMap::new();
-
-        for (key, mut margin) in get_accounts(
-            &client,
-            &options.zo_program,
-            mem::size_of::<Margin>() as u64 + 8u64,
+        let payer = st.program.payer();
+        let payer_margin_key = Pubkey::find_program_address(
+            &[payer.as_ref(), st.zo_state_pubkey.as_ref(), b"marginv1"],
+            &zo_abi::ID,
         )
-        .unwrap()
-        {
-            let account = get_type_from_account::<Margin>(&key, &mut margin);
-            if is_right_remainder(
-                &account.control,
-                options.num_workers,
-                options.n,
-            ) || account.authority.eq(payer_pubkey)
-            {
-                margin_table.insert(key, account);
-            }
-        }
+        .0;
+        let payer_margin = get_type_from_account::<Margin>(
+            &payer_margin_key,
+            &mut st
+                .rpc
+                .get_account(&payer_margin_key)
+                .expect("Could not get payer margin account"),
+        );
+        let payer_control_key = payer_margin.control;
+        let payer_control = get_type_from_account::<Control>(
+            &payer_control_key,
+            &mut st.rpc.get_account(&payer_control_key).unwrap(),
+        );
 
-        for (key, mut control) in get_accounts(
-            &client,
-            &options.zo_program,
-            mem::size_of::<Control>() as u64 + 8u64,
-        )
-        .unwrap()
-        {
-            let account = get_type_from_account::<Control>(&key, &mut control);
-            if is_right_remainder(&key, options.num_workers, options.n)
-                || account.authority.eq(payer_pubkey)
-            {
-                control_table.insert(key, account);
-                size += 1;
-            }
-        }
-        let span =
-            error_span!("account_table_new", "{}", payer_pubkey.to_string());
+        let margin_table: HashMap<_, _> =
+            load_program_accounts::<Margin>(&st.rpc, &zo_abi::ID)
+                .unwrap()
+                .into_iter()
+                .filter(|(_, a)| {
+                    is_right_remainder(&a.control, worker_count, worker_index)
+                })
+                .collect();
 
-        span.in_scope(|| debug!("State size: {}", mem::size_of::<State>()));
-        span.in_scope(|| debug!("Cache size: {}", mem::size_of::<Cache>()));
-        span.in_scope(|| debug!("Margin size: {}", mem::size_of::<Margin>()));
-        span.in_scope(|| debug!("Control size: {}", mem::size_of::<Control>()));
+        let control_table: HashMap<_, _> =
+            load_program_accounts::<Control>(&st.rpc, &zo_abi::ID)
+                .unwrap()
+                .into_iter()
+                .filter(|(k, _)| {
+                    is_right_remainder(&k, worker_count, worker_index)
+                })
+                .collect();
 
-        let (cache, cache_key) = match get_accounts(
-            &client,
-            &options.zo_program,
-            mem::size_of::<Cache>() as u64 + 8u64,
-        ) {
-            Ok(vec) => {
-                if vec.is_empty() {
-                    panic!("No cache accounts!");
-                } else if vec.len() > 1 {
-                    panic!("Too many cache accounts! {} found.", vec.len());
-                }
-                (
-                    get_type_from_account::<Cache>(
-                        &vec[0].0,
-                        &mut vec[0].1.clone(),
-                    ),
-                    vec[0].0,
-                )
-            }
-            Err(e) => {
-                panic!("{:?}", e);
-            }
-        };
+        let market_state: Vec<_> =
+            st.load_dex_markets().map(|(_, m)| m).collect();
 
-        let (state, state_key) = match get_accounts(
-            &client,
-            &options.zo_program,
-            mem::size_of::<State>() as u64 + 8u64,
-        ) {
-            Ok(vec) => {
-                if vec.is_empty() {
-                    panic!("No state accounts!");
-                } else if vec.len() > 1 {
-                    panic!("Too many state accounts!");
-                }
-                (
-                    get_type_from_account::<State>(
-                        &vec[0].0,
-                        &mut vec[0].1.clone(),
-                    ),
-                    vec[0].0,
-                )
-            }
-            Err(e) => {
-                panic!("{:?}", e);
-            }
-        };
+        let mut serum_markets: HashMap<usize, _> = HashMap::new();
+        let mut serum_vault_signers: HashMap<usize, _> = HashMap::new();
 
-        let (state_signer, _state_signer_nonce): (Pubkey, u8) =
-            SolanaPubkey::find_program_address(
-                &[&state_key.to_bytes()],
-                &options.zo_program,
-            );
-
-        let mut market_state: Vec<MarketState> =
-            Vec::with_capacity(state.perp_markets.len());
-
-        for market_info in state.perp_markets {
-            if market_info.dex_market == Pubkey::default() {
+        for (i, collateral_info) in st.iter_collaterals().enumerate() {
+            if !collateral_info.is_swappable {
                 continue;
             }
-            let market_account =
-                client.get_account(&market_info.dex_market).unwrap();
 
-            market_state.push(
-                *MarketState::deserialize(&market_account.data)
-                    .unwrap()
-                    .deref(),
-            );
-        }
-
-        let mut serum_markets: HashMap<usize, SerumMarketState> =
-            HashMap::with_capacity(state.collaterals.len());
-        let mut serum_vault_signers: HashMap<usize, Pubkey> =
-            HashMap::with_capacity(state.collaterals.len());
-
-        for (i, collateral_info) in state.collaterals.iter().enumerate() {
-            if collateral_info.mint == Pubkey::default()
-                || !collateral_info.is_swappable
-            {
-                continue;
-            }
-            let serum_oo_account = client
+            let serum_oo_account = st
+                .rpc
                 .get_account(&collateral_info.serum_open_orders)
                 .unwrap();
 
             let serum_market_address =
                 Pubkey::new(&serum_oo_account.data[13..45]);
             let mut serum_market_account =
-                client.get_account(&serum_market_address).unwrap();
+                st.rpc.get_account(&serum_market_address).unwrap();
             let serum_market_account_info = get_account_info(
                 &serum_market_address,
                 &mut serum_market_account,
@@ -216,74 +137,64 @@ impl AccountTable {
 
             let market_state = SerumMarket::load(
                 &serum_market_account_info,
-                &options.serum_dex_program,
+                &zo_abi::serum::ID,
                 true,
             )
             .unwrap();
             let market = market_state.deref();
 
             serum_markets.insert(i, *market);
-            /*
-            let key = Pubkey::new(cast_slice(&identity(market.own_address) as &[_]));
-            let nonce = bytes_of({&market.vault_signer_nonce});
-            let seeds = [key.as_ref(), nonce];
-
-            let vault_signer = Pubkey::create_program_address(
-                &seeds,
-                &options.serum_dex_program,
-            ).unwrap();
-            */
 
             let vault_signer = Pubkey::create_program_address(
                 &[
                     array_to_pubkey(&{ market.own_address }).as_ref(),
                     &market.vault_signer_nonce.to_le_bytes(),
                 ],
-                &options.serum_dex_program,
+                &zo_abi::serum::ID,
             )
             .unwrap();
 
             serum_vault_signers.insert(i, vault_signer);
         }
 
-        AccountTable {
+        Self {
             margin_table,
             control_table,
-            cache,
-            cache_key,
-            state,
-            state_key,
-            state_signer,
+            cache: st.zo_cache,
+            cache_key: st.zo_cache_pubkey,
+            state: st.zo_state,
+            state_key: st.zo_state_pubkey,
+            state_signer: st.zo_state_signer_pubkey,
             market_state,
             serum_markets,
             serum_vault_signers,
-            size,
+            payer_key: payer,
+            payer_margin_key,
+            payer_margin,
+            payer_control_key,
+            payer_control,
+            worker_count,
+            worker_index,
         }
     }
 
-    pub fn refresh_accounts(&mut self, opts: &Opts, payer_pubkey: &Pubkey) {
-        let new_table = Self::new(opts, payer_pubkey);
-        self.margin_table = new_table.margin_table;
-        self.control_table = new_table.control_table;
-        self.cache = new_table.cache;
-        self.cache_key = new_table.cache_key;
-        self.state = new_table.state;
-        self.state_key = new_table.state_key;
-        self.state_signer = new_table.state_signer;
-        self.market_state = new_table.market_state;
-        self.serum_markets = new_table.serum_markets;
-        self.serum_vault_signers = new_table.serum_vault_signers;
-        self.size = new_table.size;
+    pub fn refresh_accounts(&mut self, st: &crate::AppState) {
+        *self = Self::new(st, self.worker_index, self.worker_count);
     }
 
     pub fn update_margin(&mut self, key: Pubkey, account: Margin) {
-        self.margin_table.insert(key, account);
+        if is_right_remainder(
+            &account.control,
+            self.worker_count,
+            self.worker_index,
+        ) {
+            self.margin_table.insert(key, account);
+        }
     }
 
     pub fn update_control(&mut self, key: Pubkey, account: Control) {
-        match self.control_table.insert(key, account) {
-            Some(_) => (),
-            None => self.size += 1,
+        if is_right_remainder(&key, self.worker_count, self.worker_index) {
+            self.control_table.insert(key, account);
         }
     }
 
@@ -295,18 +206,29 @@ impl AccountTable {
         self.state = state;
     }
 
-    pub fn size(&self) -> u64 {
-        self.size
+    /// The number of control accounts.
+    pub fn size(&self) -> usize {
+        self.control_table.len()
     }
 
-    pub fn control_iterator(&self) -> IntoIter<Pubkey, Control> {
-        let copy = self.control_table.clone();
-        copy.into_iter()
+    pub fn payer_key(&self) -> Pubkey {
+        self.payer_key
     }
 
-    pub fn margin_iterator(&self) -> IntoIter<Pubkey, Margin> {
-        let copy = self.margin_table.clone();
-        copy.into_iter()
+    pub fn payer_margin_key(&self) -> Pubkey {
+        self.payer_margin_key
+    }
+
+    pub fn payer_margin(&self) -> &Margin {
+        &self.payer_margin
+    }
+
+    pub fn payer_control_key(&self) -> Pubkey {
+        self.payer_control_key
+    }
+
+    pub fn payer_control(&self) -> &Control {
+        &self.payer_control
     }
 
     pub fn get_control_from_margin(
@@ -325,9 +247,17 @@ pub struct DbWrapper {
 }
 
 impl DbWrapper {
-    pub fn new(options: &Opts, payer_pubkey: &Pubkey) -> Self {
+    pub fn new(
+        st: &crate::AppState,
+        worker_index: u8,
+        worker_count: u8,
+    ) -> Self {
         DbWrapper {
-            db: Arc::new(Mutex::new(AccountTable::new(options, payer_pubkey))),
+            db: Arc::new(Mutex::new(AccountTable::new(
+                st,
+                worker_index,
+                worker_count,
+            ))),
         }
     }
 
@@ -337,16 +267,12 @@ impl DbWrapper {
         program_id: &Pubkey,
         dex_program: &Pubkey,
         serum_dex_program: &Pubkey,
-        payer_pubkey: &Pubkey,
-        payer_margin_key: &Pubkey,
-    ) -> Result<u64, ErrorCode> {
+    ) -> Result<usize, ErrorCode> {
         let (size, handles) = self.check_all_accounts_aux(
             anchor_client,
             program_id,
             dex_program,
             serum_dex_program,
-            payer_pubkey,
-            payer_margin_key,
         )?;
         match futures::future::try_join_all(handles).await {
             Ok(_) => Ok(size),
@@ -360,9 +286,7 @@ impl DbWrapper {
         program_id: &Pubkey,
         dex_program: &Pubkey,
         serum_dex_program: &Pubkey,
-        payer_pubkey: &Pubkey,
-        payer_margin_key: &Pubkey,
-    ) -> Result<(u64, Vec<tokio::task::JoinHandle<()>>), ErrorCode> {
+    ) -> Result<(usize, Vec<tokio::task::JoinHandle<()>>), ErrorCode> {
         let db_clone = self.get_clone();
         let db: &mut MutexGuard<AccountTable> =
             &mut db_clone.lock().map_err(|_| ErrorCode::LockFailure)?;
@@ -393,14 +317,11 @@ impl DbWrapper {
                 let program: Program = anchor_client.program(*program_id);
                 let dex_program = *dex_program;
                 let serum_dex_program = *serum_dex_program;
-                let payer_pubkey = *payer_pubkey;
-                let payer_margin_key = *payer_margin_key;
-                let payer_margin =
-                    *db.margin_table.get(&payer_margin_key).unwrap();
-                let (payer_control_key, payer_control) =
-                    db.get_control_from_margin(&payer_margin).unwrap();
-                let payer_control_key = *payer_control_key;
-                let payer_control = *payer_control;
+                let payer_pubkey = db.payer_key();
+                let payer_margin_key = db.payer_margin_key();
+                let payer_margin = *db.payer_margin();
+                let payer_control_key = db.payer_control_key();
+                let payer_control = *db.payer_control();
                 let payer_oo: [Pubkey; MAX_MARKETS as usize] =
                     get_oo_keys(&payer_control.open_orders_agg);
                 let control_pair = db.get_control_from_margin(&margin).unwrap();
@@ -441,7 +362,14 @@ impl DbWrapper {
                     );
 
                     match result {
-                        Ok(()) => (),
+                        Ok(()) => {
+                            span_clone.in_scope(|| {
+                                info!(
+                                    "liquidated account for: {}",
+                                    margin.authority
+                                );
+                            });
+                        }
                         Err(e) => {
                             span_clone.in_scope(|| {
                                 error!(
@@ -457,7 +385,7 @@ impl DbWrapper {
             } else if cancel_orders {
                 let program: Program = anchor_client.program(*program_id);
                 let dex_program = *dex_program;
-                let payer_pubkey = *payer_pubkey;
+                let payer_pubkey = db.payer_key();
                 let control_pair = db.get_control_from_margin(&margin).unwrap();
                 let control = *control_pair.1;
                 let cache = db.cache;
@@ -520,7 +448,7 @@ impl DbWrapper {
             }
 
             let oracle =
-                get_oracle(cache, &state.collaterals[i].oracle_symbol)?;
+                get_oracle(cache, &state.collaterals[i].oracle_symbol).unwrap();
             let borrow_cache = cache.borrow_cache[i];
             let usdc_col = safe_mul_i80f48(coll.into(), oracle.price.into());
 
@@ -603,11 +531,10 @@ impl DbWrapper {
 
     pub fn refresh_accounts(
         &self,
-        opts: &Opts,
-        payer_pubkey: &Pubkey,
+        st: &crate::AppState,
     ) -> Result<(), ErrorCode> {
         let mut db = self.db.lock().unwrap();
-        db.refresh_accounts(opts, payer_pubkey);
+        db.refresh_accounts(st);
         Ok(())
     }
 }

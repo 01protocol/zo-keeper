@@ -1,7 +1,4 @@
-use crate::{
-    liquidator::{accounts::DbWrapper, utils::is_right_remainder},
-    Error,
-};
+use crate::{liquidator::accounts::DbWrapper, Error};
 use anchor_client::solana_client::rpc_config::{
     RpcAccountInfoConfig, RpcProgramAccountsConfig,
 };
@@ -30,8 +27,6 @@ pub async fn start_listener(
     pid: &Pubkey,
     ws_url: String,
     db: DbWrapper,
-    modulus: u8,
-    remainder: u8,
 ) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -83,20 +78,10 @@ pub async fn start_listener(
 
             if let Some(a) = load_buf::<Control>(buf) {
                 debug!("got control data: {}", pk);
-
                 let pk = Pubkey::from_str(pk).unwrap();
-                if !is_right_remainder(&pk, modulus, remainder) {
-                    continue;
-                }
-
                 db.get().lock().unwrap().update_control(pk, *a);
             } else if let Some(a) = load_buf::<Margin>(buf) {
                 debug!("got margin data: {}", pk);
-
-                if !is_right_remainder(&a.control, modulus, remainder) {
-                    continue;
-                }
-
                 let pk = Pubkey::from_str(pk).unwrap();
                 db.get().lock().unwrap().update_margin(pk, *a);
             } else if let Some(a) = load_buf::<Cache>(buf) {

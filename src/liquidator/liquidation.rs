@@ -1,4 +1,4 @@
-use anchor_client::{Client, Program};
+use anchor_client::Program;
 
 use fixed::types::I80F48;
 
@@ -21,32 +21,12 @@ use std::cell::RefCell;
 use tracing::{debug, error, error_span, info, warn};
 
 use crate::liquidator::{
-    accounts::*, error::ErrorCode, margin_utils::*, math::*, opts::Opts, swap,
-    utils::*,
+    accounts::*, error::ErrorCode, margin_utils::*, math::*, swap, utils::*,
 };
 
 #[tracing::instrument(skip_all, level = "error")]
-pub async fn liquidate_loop(
-    anchor_client: &Client,
-    database: DbWrapper,
-    opts: Opts,
-    payer_pubkey: Pubkey,
-) {
+pub async fn liquidate_loop(st: &crate::AppState, database: DbWrapper) {
     info!("starting...");
-
-    let mut payer_margin_key: Option<Pubkey> = None;
-
-    {
-        let db = database.get_clone();
-        let db = db.lock().unwrap();
-
-        for (key, margin) in db.margin_iterator() {
-            if margin.authority.eq(&payer_pubkey) {
-                payer_margin_key = Some(key);
-                break;
-            }
-        }
-    }
 
     let mut last_refresh = std::time::Instant::now();
     let mut interval =
@@ -59,12 +39,10 @@ pub async fn liquidate_loop(
         let loop_start = std::time::Instant::now();
         match database
             .check_all_accounts(
-                anchor_client,
-                &opts.zo_program,
-                &opts.dex_program,
-                &opts.serum_dex_program,
-                &payer_pubkey,
-                &payer_margin_key.unwrap(),
+                &st.client,
+                &zo_abi::ID,
+                &zo_abi::dex::ID,
+                &zo_abi::serum::ID,
             )
             .await
         {
@@ -81,7 +59,7 @@ pub async fn liquidate_loop(
         };
 
         if last_refresh.elapsed().as_secs() > 6000 {
-            database.refresh_accounts(&opts, &payer_pubkey).unwrap(); // TODO: Refactor this is bad.
+            database.refresh_accounts(st).unwrap(); // TODO: Refactor this is bad.
             last_refresh = std::time::Instant::now();
             info!("Refreshed account table");
         }
@@ -244,6 +222,7 @@ pub fn liquidate(
             &market_info,
             &dex_market,
         )?;
+
         // rebalance on perp
         // call close perp position
         swap::close_position(

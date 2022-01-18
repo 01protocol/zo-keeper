@@ -42,4 +42,13 @@ impl AppState {
     pub fn iter_oracles(&self) -> impl Iterator<Item = &zo_abi::OracleCache> {
         self.zo_cache.oracles.iter().filter(|x| !x.symbol.is_nil())
     }
+
+    pub fn iter_collaterals(
+        &self,
+    ) -> impl Iterator<Item = &zo_abi::CollateralInfo> {
+        self.zo_state
+            .collaterals
+            .iter()
+            .filter(|x| x.mint != Pubkey::default())
+    }
 }

@@ -5,12 +5,12 @@ use anchor_lang::{
 
 use anchor_client::{ClientError::SolanaClientError, RequestBuilder};
 
-use solana_account_decoder::{UiAccountData, UiAccountEncoding};
+use solana_account_decoder::{UiAccountEncoding};
 use solana_client::{
     client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
-    rpc_filter::RpcFilterType,
+    rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
     rpc_request::RpcError,
 };
 use solana_sdk::{
@@ -21,8 +21,6 @@ use solana_sdk::{
 use std::ops::Deref;
 
 use tracing::error;
-
-use base64::decode;
 
 use zo_abi::{Cache, OpenOrdersInfo, OracleCache, Symbol, MAX_MARKETS};
 
@@ -58,16 +56,22 @@ where
     }
 }
 
-pub fn get_accounts(
+pub fn load_program_accounts<T>(
     client: &RpcClient,
     program_address: &Pubkey,
-    data_size: u64,
-) -> Result<Vec<(Pubkey, Account)>, ErrorCode> {
-    // Make the config for getting accs of the right size
-    let size_filter = RpcFilterType::DataSize(data_size);
-
+) -> Result<Vec<(Pubkey, T)>, ErrorCode>
+where
+    T: ZeroCopy + Owner,
+{
     let config = RpcProgramAccountsConfig {
-        filters: Some(vec![size_filter]),
+        filters: Some(vec![
+            RpcFilterType::DataSize((8 + std::mem::size_of::<T>()) as u64),
+            RpcFilterType::Memcmp(Memcmp {
+                offset: 0,
+                bytes: MemcmpEncodedBytes::Bytes(T::discriminator().into()),
+                encoding: None,
+            }),
+        ]),
         account_config: RpcAccountInfoConfig {
             encoding: Some(UiAccountEncoding::Base64),
             data_slice: None,
@@ -76,40 +80,31 @@ pub fn get_accounts(
         with_context: Some(false),
     };
 
-    let result =
-        client.get_program_accounts_with_config(program_address, config);
-
-    match result {
-        Ok(accs) => Ok(accs),
-        Err(_) => Err(ErrorCode::FetchAccountFailure),
-    }
+    client
+        .get_program_accounts_with_config(program_address, config)
+        .map(|v| {
+            v.into_iter()
+                .map(|(k, mut a)| (k, get_type_from_account::<T>(&k, &mut a)))
+                .collect()
+        })
+        .map_err(|_| ErrorCode::FetchAccountFailure)
 }
 
-#[tracing::instrument(skip_all, level = "error")]
-pub fn vec_from_data(data: UiAccountData) -> Vec<u8> {
-    if let UiAccountData::Binary(data, _encoding) = data {
-        decode(data).unwrap()
-    } else {
-        error!("Expected binary data");
-        panic!();
-    }
-}
-
-fn get_oracle_index(cache: &Cache, s: &Symbol) -> Result<usize, ErrorCode> {
+fn get_oracle_index(cache: &Cache, s: &Symbol) -> Option<usize> {
     if s.is_nil() {
-        return Err(ErrorCode::OracleDoesNotExist);
+        return None;
     }
 
     (&cache.oracles)
         .binary_search_by_key(s, |&x| x.symbol)
-        .map_err(|_| ErrorCode::OracleDoesNotExist)
+        .ok()
 }
 
 pub fn get_oracle<'a>(
     cache: &'a Cache,
     s: &Symbol,
-) -> Result<&'a OracleCache, ErrorCode> {
-    Ok(&cache.oracles[get_oracle_index(cache, s)?])
+) -> Option<&'a OracleCache> {
+    Some(&cache.oracles[get_oracle_index(cache, s)?])
 }
 
 pub fn get_oo_keys(
