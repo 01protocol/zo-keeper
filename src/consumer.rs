@@ -153,36 +153,6 @@ fn consume(
         let req = st
             .program
             .request()
-            .args(zo_abi::instruction::CrankPnl)
-            .accounts(zo_abi::accounts::CrankPnl {
-                state: st.zo_state_pubkey,
-                state_signer: st.zo_state_signer_pubkey,
-                cache: st.zo_cache_pubkey,
-                dex_program: zo_abi::dex::ID,
-                market: market.own_address,
-            });
-
-        let res = control_accounts
-            .iter()
-            .chain(orders_accounts.iter())
-            .chain(margin_accounts.iter())
-            .fold(req, |r, x| r.accounts(x.clone()))
-            .send();
-
-        match res {
-            Ok(sg) => info!("crank_pnl: {}", sg),
-            Err(e) => {
-                let e = Error::from(e);
-                warn!("{}", e);
-                return;
-            }
-        }
-    };
-
-    {
-        let req = st
-            .program
-            .request()
             .args(zo_abi::instruction::ConsumeEvents {
                 limit: cfg.to_consume as u16,
             })
@@ -202,6 +172,36 @@ fn consume(
 
         match res {
             Ok(sg) => info!("consume_events: {}", sg),
+            Err(e) => {
+                let e = Error::from(e);
+                warn!("{}", e);
+                return;
+            }
+        }
+    };
+
+    {
+        let req = st
+            .program
+            .request()
+            .args(zo_abi::instruction::CrankPnl)
+            .accounts(zo_abi::accounts::CrankPnl {
+                state: st.zo_state_pubkey,
+                state_signer: st.zo_state_signer_pubkey,
+                cache: st.zo_cache_pubkey,
+                dex_program: zo_abi::dex::ID,
+                market: market.own_address,
+            });
+
+        let res = control_accounts
+            .iter()
+            .chain(orders_accounts.iter())
+            .chain(margin_accounts.iter())
+            .fold(req, |r, x| r.accounts(x.clone()))
+            .send();
+
+        match res {
+            Ok(sg) => info!("crank_pnl: {}", sg),
             Err(e) => {
                 let e = Error::from(e);
                 warn!("{}", e);
