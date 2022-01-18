@@ -46,7 +46,7 @@ enum Command {
     Listener {},
     Consumer {
         /// Events to consume each iteration
-        #[clap(long, default_value = "32")]
+        #[clap(long, default_value = "8")]
         to_consume: usize,
 
         /// Maximum time to stay idle, in seconds

@@ -174,7 +174,7 @@ fn consume(
             Ok(sg) => info!("consume_events: {}", sg),
             Err(e) => {
                 let e = Error::from(e);
-                warn!("{}", e);
+                warn!("consume_events: {}", e);
                 return;
             }
         }
@@ -204,7 +204,7 @@ fn consume(
             Ok(sg) => info!("crank_pnl: {}", sg),
             Err(e) => {
                 let e = Error::from(e);
-                warn!("{}", e);
+                warn!("crank_pnl: {}", e);
                 return;
             }
         }
