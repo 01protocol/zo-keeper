@@ -7,7 +7,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     time::{Duration, Instant},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 #[derive(Clone)]
 pub struct ConsumerConfig {
@@ -24,18 +24,21 @@ pub async fn run(
         let cfg = cfg.clone();
 
         tokio::task::spawn_blocking(move || {
-            let mut max_slot_height = 0;
             let mut last_cranked_at = Instant::now() - cfg.max_wait;
             let mut accounts_table = HashMap::new();
 
+            // The seq_num wraps at 1 << 32, so for the initial
+            // value pick a number larger than that.
+            let mut last_head = 1u64 << 48;
+
             loop {
-                std::thread::sleep(Duration::from_secs(1));
+                std::thread::sleep(Duration::from_millis(200));
                 consume(
                     st,
                     &symbol,
                     &mkt,
                     &cfg,
-                    &mut max_slot_height,
+                    &mut last_head,
                     &mut last_cranked_at,
                     &mut accounts_table,
                 );
@@ -57,7 +60,7 @@ fn consume(
     symbol: &str,
     market: &zo_abi::dex::ZoDexMarket,
     cfg: &ConsumerConfig,
-    max_slot_height: &mut u64,
+    last_head: &mut u64,
     last_cranked_at: &mut Instant,
     // Control -> (Open Orders, Margin)
     accounts_table: &mut HashMap<Pubkey, (Pubkey, Pubkey)>,
@@ -81,34 +84,33 @@ fn consume(
 
     tracing::Span::current().record("slot", &slot);
 
-    if slot <= *max_slot_height {
-        info!(
-            "already cranked for slot, skipping (max_seen_slot = {})",
-            max_slot_height,
-        );
-        return;
-    }
-
-    let events = zo_abi::dex::Event::deserialize_queue(&event_q_buf)
-        .unwrap()
-        .1
-        .cloned()
-        .collect::<Vec<_>>();
+    let (events_header, events) =
+        zo_abi::dex::Event::deserialize_queue(&event_q_buf).unwrap();
+    let events = events.cloned().collect::<Vec<_>>();
 
     if events.is_empty() {
-        debug!("no events, skipping");
+        trace!("no events, skipping");
         return;
     }
 
-    if last_cranked_at.elapsed() < cfg.max_wait
-        && events.len() < cfg.max_queue_length
-    {
-        info!(
-            "last cranked {}s ago and queue only has {} events, skipping",
-            last_cranked_at.elapsed().as_secs(),
-            events.len(),
-        );
-        return;
+    if last_cranked_at.elapsed() < cfg.max_wait {
+        if events_header.head == *last_head {
+            debug!(
+                "last cranked {}s ago and queue head still at {}, skipping",
+                last_cranked_at.elapsed().as_secs(),
+                { events_header.head },
+            );
+            return;
+        }
+
+        if events.len() < cfg.max_queue_length {
+            debug!(
+                "last cranked {}s ago and queue has {} events, skipping",
+                last_cranked_at.elapsed().as_secs(),
+                events.len(),
+            );
+            return;
+        }
     }
 
     // Sorted, unique, and capped list of control pubkeys.
@@ -146,79 +148,30 @@ fn consume(
         "fetching {} events and {} unique orders took {}ms",
         events.len(),
         orders_accounts.len(),
-        Instant::now().duration_since(t).as_millis()
+        t.elapsed().as_millis()
     );
 
-    {
-        let req = st
-            .program
-            .request()
-            .args(zo_abi::instruction::ConsumeEvents {
-                limit: cfg.to_consume as u16,
-            })
-            .accounts(zo_abi::accounts::ConsumeEvents {
-                state: st.zo_state_pubkey,
-                state_signer: st.zo_state_signer_pubkey,
-                dex_program: zo_abi::dex::ID,
-                market: market.own_address,
-                event_queue: market.event_q,
-            });
+    let market = *market;
+    let limit = cfg.to_consume as u16;
+    let span = tracing::Span::current();
 
-        let res = control_accounts
-            .iter()
-            .chain(orders_accounts.iter())
-            .fold(req, |r, x| r.accounts(x.clone()))
-            .send();
+    std::thread::spawn(move || {
+        let _g = span.enter();
+        consume_events(st, &market, limit, &control_accounts, &orders_accounts);
+        crank_pnl(
+            st,
+            &market,
+            &control_accounts,
+            &orders_accounts,
+            &margin_accounts,
+        );
+    });
 
-        match res {
-            Ok(sg) => info!("consume_events: {}", sg),
-            Err(e) => {
-                let e = Error::from(e);
-                warn!("consume_events: {}", e);
-                return;
-            }
-        }
-    };
-
-    {
-        let req = st
-            .program
-            .request()
-            .args(zo_abi::instruction::CrankPnl)
-            .accounts(zo_abi::accounts::CrankPnl {
-                state: st.zo_state_pubkey,
-                state_signer: st.zo_state_signer_pubkey,
-                cache: st.zo_cache_pubkey,
-                dex_program: zo_abi::dex::ID,
-                market: market.own_address,
-            });
-
-        let res = control_accounts
-            .iter()
-            .chain(orders_accounts.iter())
-            .chain(margin_accounts.iter())
-            .fold(req, |r, x| r.accounts(x.clone()))
-            .send();
-
-        match res {
-            Ok(sg) => info!("crank_pnl: {}", sg),
-            Err(e) => {
-                let e = Error::from(e);
-                warn!("crank_pnl: {}", e);
-                return;
-            }
-        }
-    };
-
-    *max_slot_height = slot;
-
-    info!(
-        "loop took {}ms",
-        Instant::now().duration_since(t).as_millis()
-    );
+    *last_head = events_header.head;
+    *last_cranked_at = Instant::now();
 }
 
-pub fn open_orders_pda(control: &Pubkey, zo_dex_market: &Pubkey) -> Pubkey {
+fn open_orders_pda(control: &Pubkey, zo_dex_market: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(
         &[control.as_ref(), zo_dex_market.as_ref()],
         &zo_abi::dex::ID,
@@ -226,10 +179,79 @@ pub fn open_orders_pda(control: &Pubkey, zo_dex_market: &Pubkey) -> Pubkey {
     .0
 }
 
-pub fn margin_pda(control: &zo_abi::Control, state: &Pubkey) -> Pubkey {
+fn margin_pda(control: &zo_abi::Control, state: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(
         &[control.authority.as_ref(), state.as_ref(), b"marginv1"],
         &zo_abi::ID,
     )
     .0
+}
+
+fn consume_events(
+    st: &AppState,
+    market: &zo_abi::dex::ZoDexMarket,
+    limit: u16,
+    control_accounts: &[AccountMeta],
+    orders_accounts: &[AccountMeta],
+) {
+    let req = st
+        .program
+        .request()
+        .args(zo_abi::instruction::ConsumeEvents { limit })
+        .accounts(zo_abi::accounts::ConsumeEvents {
+            state: st.zo_state_pubkey,
+            state_signer: st.zo_state_signer_pubkey,
+            dex_program: zo_abi::dex::ID,
+            market: market.own_address,
+            event_queue: market.event_q,
+        });
+
+    let res = control_accounts
+        .iter()
+        .chain(orders_accounts.iter())
+        .fold(req, |r, x| r.accounts(x.clone()))
+        .send();
+
+    match res {
+        Ok(sg) => info!("consume_events: {}", sg),
+        Err(e) => {
+            let e = Error::from(e);
+            warn!("consume_events: {}", e);
+        }
+    }
+}
+
+fn crank_pnl(
+    st: &AppState,
+    market: &zo_abi::dex::ZoDexMarket,
+    control_accounts: &[AccountMeta],
+    orders_accounts: &[AccountMeta],
+    margin_accounts: &[AccountMeta],
+) {
+    let req = st
+        .program
+        .request()
+        .args(zo_abi::instruction::CrankPnl)
+        .accounts(zo_abi::accounts::CrankPnl {
+            state: st.zo_state_pubkey,
+            state_signer: st.zo_state_signer_pubkey,
+            cache: st.zo_cache_pubkey,
+            dex_program: zo_abi::dex::ID,
+            market: market.own_address,
+        });
+
+    let res = control_accounts
+        .iter()
+        .chain(orders_accounts.iter())
+        .chain(margin_accounts.iter())
+        .fold(req, |r, x| r.accounts(x.clone()))
+        .send();
+
+    match res {
+        Ok(sg) => info!("crank_pnl: {}", sg),
+        Err(e) => {
+            let e = Error::from(e);
+            warn!("crank_pnl: {}", e);
+        }
+    }
 }

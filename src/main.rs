@@ -50,7 +50,7 @@ enum Command {
         to_consume: usize,
 
         /// Maximum time to stay idle, in seconds
-        #[clap(long, default_value = "60", parse(try_from_str = parse_seconds))]
+        #[clap(long, default_value = "30", parse(try_from_str = parse_seconds))]
         max_wait: Duration,
 
         /// Maximum queue length before processing
