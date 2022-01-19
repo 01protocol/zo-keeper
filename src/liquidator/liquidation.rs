@@ -237,7 +237,7 @@ pub fn liquidate(
             dex_program,
             position_index,
         )?;
-    } else if colls.iter().all(|col| col < &DUST_THRESHOLD) {
+    } else if colls.iter().all(|col| col < &DUST_THRESHOLD) && !has_positions {
         let oo_index_result = largest_open_order(cache, control)?;
 
         if let Some(_order_index) = oo_index_result {
@@ -273,7 +273,7 @@ pub fn liquidate(
             )?;
         };
     } else if *min_col < 0u64 {
-        // Cancel a spot position
+        // Close a spot position
         let quote_idx = if let Some((q_idx, _q_coll)) = quote_info {
             q_idx
         } else {
@@ -344,7 +344,7 @@ pub fn liquidate(
             );
         }
     } else if let Some(_order_index) = largest_open_order(cache, control)? {
-        // Must close perp open orders
+        // Must cancel perp open orders
         info!("Closing {}'s {} perp position", margin.authority, col_index);
         cancel(
             program,
