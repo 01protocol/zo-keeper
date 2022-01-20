@@ -183,7 +183,10 @@ pub fn liquidate(
     );
     let market_info = market_infos[position_index];
 
-    if has_positions && -min_col <= max_position_notional {
+    let is_spot_bankrupt = colls.iter().all(|col| col < &DUST_THRESHOLD);
+
+    if has_positions && (-min_col <= max_position_notional || is_spot_bankrupt)
+    {
         info!(
             "Liquidating {}'s {} perp position",
             margin.authority, position_index
@@ -237,7 +240,7 @@ pub fn liquidate(
             dex_program,
             position_index,
         )?;
-    } else if colls.iter().all(|col| col < &DUST_THRESHOLD) && !has_positions {
+    } else if is_spot_bankrupt && !has_positions {
         let oo_index_result = largest_open_order(cache, control)?;
 
         if let Some(_order_index) = oo_index_result {
