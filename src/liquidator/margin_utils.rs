@@ -291,10 +291,12 @@ fn calc_acc_val(
     let funding_diff = market_funding_index
         .safe_sub(current_funding_index)
         .unwrap();
-    let unrealized_funding = pos_size
+    let unrealized_funding: i64 = (pos_size as i128)
         .safe_mul(-funding_diff)
         .unwrap()
-        .safe_div(10i64.pow(coin_decimals))
+        .safe_div(10i128.pow(coin_decimals))
+        .unwrap()
+        .try_into()
         .unwrap();
 
     let unrealized_pnl = if pos_size > 0 {

@@ -533,7 +533,7 @@ fn liquidate_perp_position(
                     dex_program: *dex_program,
                 })
                 .args(instruction::LiquidatePerpPosition {
-                    asset_transfer_lots: u64::MAX / 1_000_000,
+                    asset_transfer_lots: (i64::MAX as u64).safe_div(market_info.coin_lot_size).unwrap(),
                 })
                 .options(CommitmentConfig::confirmed())
         },
