@@ -10,7 +10,6 @@
 use crate::liquidator::{
     error::ErrorCode, liquidation, margin_utils::*, math::*, utils::*,
 };
-use anchor_client::{Client, Program};
 use fixed::types::I80F48;
 use serum_dex::state::{
     Market as SerumMarket, MarketState as SerumMarketState,
@@ -73,7 +72,7 @@ impl AccountTable {
         // Assumes that the dex is started, i.e. there's a cache
         // Also need to load market state info.
 
-        let payer = st.program.payer();
+        let payer = st.payer();
         let payer_margin_key = Pubkey::find_program_address(
             &[payer.as_ref(), st.zo_state_pubkey.as_ref(), b"marginv1"],
             &zo_abi::ID,
@@ -263,14 +262,12 @@ impl DbWrapper {
 
     pub async fn check_all_accounts(
         &self,
-        anchor_client: &Client,
-        program_id: &Pubkey,
+        st: &'static crate::AppState,
         dex_program: &Pubkey,
         serum_dex_program: &Pubkey,
     ) -> Result<usize, ErrorCode> {
         let (size, handles) = self.check_all_accounts_aux(
-            anchor_client,
-            program_id,
+            st,
             dex_program,
             serum_dex_program,
         )?;
@@ -282,8 +279,7 @@ impl DbWrapper {
 
     pub fn check_all_accounts_aux(
         &self,
-        anchor_client: &Client,
-        program_id: &Pubkey,
+        st: &'static crate::AppState,
         dex_program: &Pubkey,
         serum_dex_program: &Pubkey,
     ) -> Result<(usize, Vec<tokio::task::JoinHandle<()>>), ErrorCode> {
@@ -314,7 +310,6 @@ impl DbWrapper {
                 // Get the updated payer accounts
 
                 /*******************************/
-                let program: Program = anchor_client.program(*program_id);
                 let dex_program = *dex_program;
                 let serum_dex_program = *serum_dex_program;
                 let payer_pubkey = db.payer_key();
@@ -339,7 +334,7 @@ impl DbWrapper {
                 let span_clone = span.clone();
                 let handle = tokio::task::spawn_blocking(move || {
                     let result = liquidation::liquidate(
-                        &program,
+                        &st.program(),
                         &dex_program,
                         &payer_pubkey,
                         &payer_margin,
@@ -383,7 +378,6 @@ impl DbWrapper {
 
                 handles.push(handle);
             } else if cancel_orders {
-                let program: Program = anchor_client.program(*program_id);
                 let dex_program = *dex_program;
                 let payer_pubkey = db.payer_key();
                 let control_pair = db.get_control_from_margin(&margin).unwrap();
@@ -398,7 +392,7 @@ impl DbWrapper {
                 let span_clone = span.clone();
                 let handle = tokio::task::spawn_blocking(move || {
                     let result = liquidation::cancel(
-                        &program,
+                        &st.program(),
                         &dex_program,
                         &payer_pubkey,
                         &key,

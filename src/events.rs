@@ -49,8 +49,8 @@ fn parse<'a>(
 ) {
     const PROG_LOG_PREFIX: &str = "Program log: ";
 
-    let prog_start_str = format!("Program {} invoke", st.program.id());
-    let prog_end_str = format!("Program {} success", st.program.id());
+    let prog_start_str = format!("Program {} invoke", zo_abi::ID);
+    let prog_end_str = format!("Program {} success", zo_abi::ID);
 
     let mut is_zo_log = false;
 

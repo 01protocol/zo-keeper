@@ -1,12 +1,16 @@
 use anchor_client::{
-    solana_client::rpc_client::RpcClient, solana_sdk::pubkey::Pubkey, Client,
-    Cluster, Program,
+    solana_client::rpc_client::RpcClient,
+    solana_sdk::{
+        commitment_config::CommitmentConfig, pubkey::Pubkey,
+        signer::keypair::Keypair,
+    },
+    Client, Cluster, Program,
 };
 
 pub struct AppState {
+    payer: Keypair,
+    commitment: CommitmentConfig,
     pub cluster: Cluster,
-    pub client: Client,
-    pub program: Program,
     pub rpc: RpcClient,
     pub zo_state: zo_abi::State,
     pub zo_cache: zo_abi::Cache,
@@ -16,6 +20,56 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn new(cluster: Cluster, payer: Keypair, state_pubkey: Pubkey) -> Self {
+        let program = Client::new_with_options(
+            cluster.clone(),
+            std::rc::Rc::new(Keypair::from_bytes(&payer.to_bytes()).unwrap()),
+            CommitmentConfig::confirmed(),
+        )
+        .program(zo_abi::ID);
+
+        let rpc = program.rpc();
+        let zo_state: zo_abi::State = program.account(state_pubkey).unwrap();
+        let zo_cache: zo_abi::Cache = program.account(zo_state.cache).unwrap();
+        let (zo_state_signer_pubkey, state_signer_nonce) =
+            Pubkey::find_program_address(&[state_pubkey.as_ref()], &zo_abi::ID);
+
+        if state_signer_nonce != zo_state.signer_nonce {
+            panic!("Invalid state signer nonce");
+        }
+
+        Self {
+            payer,
+            commitment: CommitmentConfig::confirmed(),
+            cluster,
+            rpc,
+            zo_state,
+            zo_cache,
+            zo_state_pubkey: state_pubkey,
+            zo_cache_pubkey: zo_state.cache,
+            zo_state_signer_pubkey,
+        }
+    }
+
+    pub fn payer(&self) -> Pubkey {
+        use anchor_client::solana_sdk::signer::Signer;
+        self.payer.pubkey()
+    }
+
+    pub fn client(&self) -> Client {
+        Client::new_with_options(
+            self.cluster.clone(),
+            std::rc::Rc::new(
+                Keypair::from_bytes(&self.payer.to_bytes()).unwrap(),
+            ),
+            self.commitment.clone(),
+        )
+    }
+
+    pub fn program(&self) -> Program {
+        self.client().program(zo_abi::ID)
+    }
+
     pub fn iter_markets(
         &self,
     ) -> impl Iterator<Item = &zo_abi::PerpMarketInfo> {

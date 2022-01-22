@@ -133,7 +133,7 @@ fn consume(
             (
                 open_orders_pda(&control, &market.own_address),
                 margin_pda(
-                    &st.program.account(control).unwrap(),
+                    &st.program().account(control).unwrap(),
                     &st.zo_state_pubkey,
                 ),
             )
@@ -194,8 +194,8 @@ fn consume_events(
     control_accounts: &[AccountMeta],
     orders_accounts: &[AccountMeta],
 ) {
-    let req = st
-        .program
+    let program = st.program();
+    let req = program
         .request()
         .args(zo_abi::instruction::ConsumeEvents { limit })
         .accounts(zo_abi::accounts::ConsumeEvents {
@@ -228,8 +228,8 @@ fn crank_pnl(
     orders_accounts: &[AccountMeta],
     margin_accounts: &[AccountMeta],
 ) {
-    let req = st
-        .program
+    let program = st.program();
+    let req = program
         .request()
         .args(zo_abi::instruction::CrankPnl)
         .accounts(zo_abi::accounts::CrankPnl {

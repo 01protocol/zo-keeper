@@ -1,8 +1,6 @@
 use anchor_client::{
-    solana_sdk::{
-        commitment_config::CommitmentConfig, pubkey::Pubkey, signer::keypair,
-    },
-    Client, Cluster,
+    solana_sdk::{pubkey::Pubkey, signer::keypair},
+    Cluster,
 };
 use clap::{AppSettings, Parser, Subcommand};
 use std::{env, time::Duration};
@@ -107,37 +105,11 @@ fn main() -> Result<(), lib::Error> {
         },
     };
 
-    let client = Client::new_with_options(
-        cluster.clone(),
-        payer,
-        CommitmentConfig::confirmed(),
-    );
-
-    let program = client.program(zo_abi::ID);
-    let rpc = program.rpc();
-    let zo_state: zo_abi::State = program.account(zo_state_pubkey).unwrap();
-    let zo_cache: zo_abi::Cache = program.account(zo_state.cache).unwrap();
-
-    let (zo_state_signer_pubkey, state_signer_nonce) =
-        Pubkey::find_program_address(&[zo_state_pubkey.as_ref()], &zo_abi::ID);
-
-    if state_signer_nonce != zo_state.signer_nonce {
-        panic!("Invalid state signer nonce");
-    }
-
-    let app_state = lib::AppState {
+    let app_state: &'static _ = Box::leak(Box::new(lib::AppState::new(
         cluster,
-        client,
-        program,
-        rpc,
-        zo_state,
-        zo_cache,
+        payer,
         zo_state_pubkey,
-        zo_cache_pubkey: zo_state.cache,
-        zo_state_signer_pubkey,
-    };
-
-    let app_state: &'static _ = Box::leak(Box::new(app_state));
+    )));
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

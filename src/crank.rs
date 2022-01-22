@@ -86,15 +86,15 @@ where
 
 #[tracing::instrument(skip_all, level = "error", fields(symbols = ?s))]
 fn cache_oracle(st: &AppState, s: &[String], accs: &[AccountMeta]) {
-    let req = st
-        .program
+    let program = st.program();
+    let req = program
         .request()
         .args(zo_abi::instruction::CacheOracle {
             symbols: s.to_owned(),
             mock_prices: None,
         })
         .accounts(zo_abi::accounts::CacheOracle {
-            signer: st.program.payer(),
+            signer: st.payer(),
             cache: st.zo_cache_pubkey,
         });
 
@@ -108,12 +108,12 @@ fn cache_oracle(st: &AppState, s: &[String], accs: &[AccountMeta]) {
 
 #[tracing::instrument(skip_all, level = "error", fields(from = start, to = end))]
 fn cache_interest(st: &AppState, start: u8, end: u8) {
-    let res = st
-        .program
+    let program = st.program();
+    let res = program
         .request()
         .args(zo_abi::instruction::CacheInterestRates { start, end })
         .accounts(zo_abi::accounts::CacheInterestRates {
-            signer: st.program.payer(),
+            signer: st.payer(),
             state: st.zo_state_pubkey,
             cache: st.zo_cache_pubkey,
         })
@@ -127,8 +127,8 @@ fn cache_interest(st: &AppState, start: u8, end: u8) {
 
 #[tracing::instrument(skip_all, level = "error", fields(symbol = symbol))]
 fn update_funding(st: &AppState, symbol: &str, m: &zo_abi::dex::ZoDexMarket) {
-    let res = st
-        .program
+    let program = st.program();
+    let res = program
         .request()
         .args(zo_abi::instruction::UpdatePerpFunding {})
         .accounts(zo_abi::accounts::UpdatePerpFunding {

@@ -25,7 +25,7 @@ use crate::liquidator::{
 };
 
 #[tracing::instrument(skip_all, level = "error")]
-pub async fn liquidate_loop(st: &crate::AppState, database: DbWrapper) {
+pub async fn liquidate_loop(st: &'static crate::AppState, database: DbWrapper) {
     info!("starting...");
 
     let mut last_refresh = std::time::Instant::now();
@@ -39,8 +39,7 @@ pub async fn liquidate_loop(st: &crate::AppState, database: DbWrapper) {
         let loop_start = std::time::Instant::now();
         match database
             .check_all_accounts(
-                &st.client,
-                &zo_abi::ID,
+                &st,
                 &zo_abi::dex::ID,
                 &zo_abi::serum::ID,
             )
@@ -533,7 +532,9 @@ fn liquidate_perp_position(
                     dex_program: *dex_program,
                 })
                 .args(instruction::LiquidatePerpPosition {
-                    asset_transfer_lots: (i64::MAX as u64).safe_div(market_info.coin_lot_size).unwrap(),
+                    asset_transfer_lots: (i64::MAX as u64)
+                        .safe_div(market_info.coin_lot_size)
+                        .unwrap(),
                 })
                 .options(CommitmentConfig::confirmed())
         },
