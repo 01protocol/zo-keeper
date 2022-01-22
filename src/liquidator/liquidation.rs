@@ -1,5 +1,11 @@
 use anchor_client::Program;
 
+use anchor_lang::{
+    prelude::ToAccountMetas,
+    solana_program::instruction::Instruction,
+    InstructionData,
+};
+
 use fixed::types::I80F48;
 
 use serum_dex::state::MarketState as SerumMarketState;
@@ -27,7 +33,7 @@ use crate::liquidator::{
 #[tracing::instrument(skip_all, level = "error")]
 pub async fn liquidate_loop(st: &'static crate::AppState, database: DbWrapper) {
     info!("starting...");
-
+    
     let mut last_refresh = std::time::Instant::now();
     let mut interval =
         tokio::time::interval(std::time::Duration::from_millis(250));
@@ -141,7 +147,7 @@ pub fn liquidate(
         .zip(cache.marks)
         .map(|(order, mark)| {
             safe_mul_i80f48(
-                I80F48::from_num(order.pos_size.abs()),
+                I80F48::from_num(order.pos_size),
                 mark.price.into(),
             )
         })
@@ -149,7 +155,7 @@ pub fn liquidate(
 
     let positions = positions.iter().enumerate();
 
-    let position: Option<(usize, &I80F48)> = match positions.max_by_key(|a| a.1)
+    let position: Option<(usize, &I80F48)> = match positions.max_by_key(|a| a.1.abs())
     {
         Some(x) => {
             if x.1.is_zero() {
@@ -183,8 +189,8 @@ pub fn liquidate(
     let market_info = market_infos[position_index];
 
     let is_spot_bankrupt = colls.iter().all(|col| col < &DUST_THRESHOLD);
-
-    if has_positions && (-min_col <= max_position_notional || is_spot_bankrupt)
+    println!("is_spot_bankrupt: {}, has_positions: {}", is_spot_bankrupt, has_positions);
+    if has_positions && (-min_col <= max_position_notional.abs() || is_spot_bankrupt)
     {
         info!(
             "Liquidating {}'s {} perp position",
@@ -211,22 +217,27 @@ pub fn liquidate(
         liquidate_perp_position(
             program,
             payer_pubkey,
+            payer_margin,
             payer_margin_key,
-            payer_control_key,
+            payer_control,
             &payer_oo[position_index],
             margin,
             margin_key,
             &open_orders,
             cache_key,
+            state,
             state_key,
             state_signer,
             dex_program,
             &market_info,
             &dex_market,
+            position_index,
+            max_position_notional.is_positive(),
         )?;
 
         // rebalance on perp
         // call close perp position
+        /*
         swap::close_position(
             program,
             state,
@@ -239,6 +250,7 @@ pub fn liquidate(
             dex_program,
             position_index,
         )?;
+        */
     } else if is_spot_bankrupt && !has_positions {
         let oo_index_result = largest_open_order(cache, control)?;
 
@@ -487,18 +499,22 @@ fn cancel_orders(
 fn liquidate_perp_position(
     program: &Program,
     payer_pubkey: &Pubkey,
+    liqor_margin: &Margin,
     liqor_margin_key: &Pubkey,
-    liqor_control_key: &Pubkey,
+    liqor_control: &Control,
     liqor_oo_key: &Pubkey,
     liqee_margin: &Margin,
     liqee_margin_key: &Pubkey,
     liqee_open_orders: &Pubkey,
     cache_key: &Pubkey,
+    state: &State,
     state_key: &Pubkey,
     state_signer: &Pubkey,
     dex_program: &Pubkey,
     market_info: &MarketState,
     dex_market: &Pubkey,
+    index: usize,
+    liqee_was_long: bool,
 ) -> Result<(), ErrorCode> {
     let span = error_span!(
         "liquidate_perp_position",
@@ -508,35 +524,86 @@ fn liquidate_perp_position(
     // Can probably save some of these variables in the ds.
     // e.g. the state_signer and open_orders.
 
+    let cancel_ix = Instruction {
+        accounts: ix_accounts::ForceCancelAllPerpOrders {
+            pruner: *payer_pubkey,
+            state: *state_key,
+            cache: *cache_key,
+            state_signer: *state_signer,
+            liqee_margin: *liqee_margin_key,
+            liqee_control: liqee_margin.control,
+            liqee_oo: *liqee_open_orders,
+            dex_market: *dex_market,
+            req_q: market_info.req_q,
+            event_q: market_info.event_q,
+            market_bids: market_info.bids,
+            market_asks: market_info.asks,
+            dex_program: *dex_program,
+        }
+        .to_account_metas(None),
+        data: instruction::ForceCancelAllPerpOrders { limit: 32 }.data(),
+        program_id: program.id(),
+    };
+
+    let liq_ix = Instruction {
+        accounts: ix_accounts::LiquidatePerpPosition {
+            state: *state_key,
+            cache: *cache_key,
+            state_signer: *state_signer,
+            liqor: *payer_pubkey,
+            liqor_margin: *liqor_margin_key,
+            liqor_control: liqor_margin.control,
+            liqor_oo: *liqor_oo_key,
+            liqee: liqee_margin.authority,
+            liqee_margin: *liqee_margin_key,
+            liqee_control: liqee_margin.control,
+            liqee_oo: *liqee_open_orders,
+            dex_market: *dex_market,
+            req_q: market_info.req_q,
+            event_q: market_info.event_q,
+            market_bids: market_info.bids,
+            market_asks: market_info.asks,
+            dex_program: *dex_program,
+        }
+        .to_account_metas(None),
+        data: instruction::LiquidatePerpPosition {
+            asset_transfer_lots: (i64::MAX as u64)
+                .safe_div(market_info.coin_lot_size)
+                .unwrap(),
+        }
+        .data(),
+        program_id: program.id(),
+    };
+
+    let rebalance_ix: Option<Instruction> = match swap::close_position_ix(
+        program,
+        state,
+        state_key,
+        state_signer,
+        liqor_margin,
+        liqor_margin_key,
+        liqor_control,
+        market_info,
+        dex_program,
+        index,
+        liqee_was_long,
+    ) {
+        Ok(ix) => Some(ix),
+        Err(_e) => { span.in_scope(|| warn!("Unable to create rebalance instruction")); None }
+    };
+
     let signature = retry_send(
         || {
-            program
+            let request = program
                 .request()
-                .accounts(ix_accounts::LiquidatePerpPosition {
-                    state: *state_key,
-                    cache: *cache_key,
-                    state_signer: *state_signer,
-                    liqor: *payer_pubkey,
-                    liqor_margin: *liqor_margin_key,
-                    liqor_control: *liqor_control_key,
-                    liqor_oo: *liqor_oo_key,
-                    liqee: liqee_margin.authority,
-                    liqee_margin: *liqee_margin_key,
-                    liqee_control: liqee_margin.control,
-                    liqee_oo: *liqee_open_orders,
-                    dex_market: *dex_market,
-                    req_q: market_info.req_q,
-                    event_q: market_info.event_q,
-                    market_bids: market_info.bids,
-                    market_asks: market_info.asks,
-                    dex_program: *dex_program,
-                })
-                .args(instruction::LiquidatePerpPosition {
-                    asset_transfer_lots: (i64::MAX as u64)
-                        .safe_div(market_info.coin_lot_size)
-                        .unwrap(),
-                })
-                .options(CommitmentConfig::confirmed())
+                .instruction(cancel_ix.clone())
+                .instruction(liq_ix.clone())
+                .options(CommitmentConfig::confirmed());
+            if let Some(ix) = rebalance_ix.clone() {
+                request.instruction(ix)
+            } else {
+                request
+            }
         },
         5,
     );

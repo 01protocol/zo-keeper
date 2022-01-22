@@ -80,14 +80,14 @@ where
         with_context: Some(false),
     };
 
-    client
+    Ok(client
         .get_program_accounts_with_config(program_address, config)
         .map(|v| {
             v.into_iter()
                 .map(|(k, mut a)| (k, get_type_from_account::<T>(&k, &mut a)))
                 .collect()
-        })
-        .map_err(|_| ErrorCode::FetchAccountFailure)
+        }).unwrap())
+        //.map_err(|_| ErrorCode::FetchAccountFailure)
 }
 
 fn get_oracle_index(cache: &Cache, s: &Symbol) -> Option<usize> {

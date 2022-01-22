@@ -4,6 +4,11 @@
 */
 use anchor_client::Program;
 
+use anchor_lang::{
+    prelude::ToAccountMetas, solana_program::instruction::Instruction,
+    InstructionData,
+};
+
 use fixed::types::I80F48;
 
 use serum_dex::{
@@ -111,7 +116,7 @@ pub fn swap_asset(
     };
 
     if swap_amount <= 50 * 1000000 {
-        // 50 USD
+        // 50 USDC
         span.in_scope(|| warn!("No coins to swap for asset {}", asset_index));
         return Ok(());
     }
@@ -157,7 +162,7 @@ pub fn swap_asset(
                 .args(instruction::Swap {
                     buy,
                     allow_borrow: false,
-                    amount: swap_amount, // TODO: make this more principled
+                    amount: swap_amount,
                     min_rate: 1u64, // WARNING: this can have a lot of slippage
                 })
                 .options(CommitmentConfig::confirmed())
@@ -200,6 +205,11 @@ pub fn close_position(
     let native_coin_total = i64::from_le_bytes(native_coin_total_bytes);
     let span = error_span!("close_position", index = index);
 
+    if native_coin_total == 0 {
+        span.in_scope(|| warn!("No coins to close for asset {}", index));
+        return Ok(());
+    }
+
     let result = if native_coin_total < 0 {
         // Short order
         retry_send(
@@ -229,7 +239,7 @@ pub fn close_position(
                             .safe_div(dex_market.coin_lot_size)
                             .unwrap(),
                         max_quote_quantity: 999_999_999_999_999u64,
-                        order_type: OrderType::Limit,
+                        order_type: OrderType::ReduceOnlyIoc,
                         limit: 10,
                         client_id: 0u64,
                     })
@@ -288,4 +298,59 @@ pub fn close_position(
             Err(ErrorCode::SwapError)
         }
     }
+}
+
+pub fn close_position_ix(
+    program: &Program,
+    state: &State,
+    state_key: &Pubkey,
+    state_signer: &Pubkey,
+    margin: &Margin,
+    margin_key: &Pubkey,
+    control: &Control,
+    dex_market: &MarketState,
+    dex_program: &Pubkey,
+    index: usize,
+    liqee_was_long: bool,
+) -> Result<Instruction, ErrorCode> {
+
+    // Close all perp positions
+    let limit: u64 = if !liqee_was_long {
+        999_999_999_999_999
+    } else {
+        1
+    };
+
+    let close_ix = Instruction {
+        accounts: accounts::PlacePerpOrder {
+            state: *state_key,
+            state_signer: *state_signer,
+            cache: state.cache,
+            authority: margin.authority,
+            margin: *margin_key,
+            control: margin.control,
+            open_orders: control.open_orders_agg[index].key,
+            dex_market: dex_market.own_address,
+            req_q: dex_market.req_q,
+            event_q: dex_market.event_q,
+            market_bids: dex_market.bids,
+            market_asks: dex_market.asks,
+            dex_program: *dex_program,
+            rent: RENT_ID,
+        }
+        .to_account_metas(None),
+        data: instruction::PlacePerpOrder {
+            is_long: !liqee_was_long,   // Place opposite order to close
+            limit_price: limit, // TODO: make this more principled
+            max_base_quantity: 999_999_999_999_999u64,
+            max_quote_quantity: 999_999_999_999_999u64,
+            order_type: OrderType::ReduceOnlyIoc,
+            limit: 10,
+            client_id: 0u64,
+        }
+        .data(),
+        program_id: program.id(),
+    };
+
+    Ok(close_ix)
 }
