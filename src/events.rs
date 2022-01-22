@@ -14,7 +14,7 @@ pub async fn process(
     ss: Vec<String>,
     sig: String,
 ) {
-    let (rpnl, liq, bank, oracle) = parse(st, ss.iter(), sig);
+    let (rpnl, liq, bank, bal, oracle) = parse(st, ss.iter(), sig);
 
     let on_err = |e| {
         let e = Error::from(e);
@@ -24,6 +24,7 @@ pub async fn process(
         db::RealizedPnl::update(db, &rpnl).map_err(on_err),
         db::Liquidation::update(db, &liq).map_err(on_err),
         db::Bankruptcy::update(db, &bank).map_err(on_err),
+        db::BalanceChange::update(db, &bal).map_err(on_err),
     );
 
     match oracle {
@@ -43,6 +44,7 @@ fn parse<'a>(
     Vec<db::RealizedPnl>,
     Vec<db::Liquidation>,
     Vec<db::Bankruptcy>,
+    Vec<db::BalanceChange>,
     Option<events::CacheOracleNoops>,
 ) {
     const PROG_LOG_PREFIX: &str = "Program log: ";
@@ -55,6 +57,7 @@ fn parse<'a>(
     let mut rpnl = Vec::new();
     let mut liq = Vec::new();
     let mut bank = Vec::new();
+    let mut bal = Vec::new();
     let mut oracle = None;
 
     let time = SystemTime::now()
@@ -142,12 +145,36 @@ fn parse<'a>(
             continue;
         }
 
+        if let Some(e) = load::<events::DepositLog>(&bytes) {
+            bal.push(db::BalanceChange {
+                time,
+                sig: sig.clone(),
+                margin: e.margin_key.to_string(),
+                symbol: st.zo_state.collaterals[e.col_index as usize]
+                    .oracle_symbol
+                    .into(),
+                amount: e.deposit_amount as i64,
+            });
+        }
+
+        if let Some(e) = load::<events::WithdrawLog>(&bytes) {
+            bal.push(db::BalanceChange {
+                time,
+                sig: sig.clone(),
+                margin: e.margin_key.to_string(),
+                symbol: st.zo_state.collaterals[e.col_index as usize]
+                    .oracle_symbol
+                    .into(),
+                amount: -(e.withdraw_amount as i64),
+            })
+        }
+
         if let Some(e) = load::<events::CacheOracleNoops>(&bytes) {
             oracle = Some(e);
         }
     }
 
-    (rpnl, liq, bank, oracle)
+    (rpnl, liq, bank, bal, oracle)
 }
 
 #[inline(always)]

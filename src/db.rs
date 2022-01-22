@@ -88,6 +88,15 @@ pub struct Bankruptcy {
     pub time: i64,
 }
 
+#[derive(Serialize)]
+pub struct BalanceChange {
+    pub time: i64,
+    pub sig: String,
+    pub margin: String,
+    pub symbol: String,
+    pub amount: i64,
+}
+
 #[tracing::instrument(
     skip_all,
     level = "error",
@@ -179,6 +188,7 @@ simple_update_impl! {
     (RealizedPnl, "rpnl", doc! { "symbol": 1, "sig": 1 }),
     (Liquidation, "liq", doc! { "sig": 1 }),
     (Bankruptcy, "bank", doc! { "sig": 1 }),
+    (BalanceChange, "balanceChange", doc! { "sig": 1, "symbol": 1, "margin": 1 })
 }
 
 impl Trade {
