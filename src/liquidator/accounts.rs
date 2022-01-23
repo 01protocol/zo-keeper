@@ -136,7 +136,7 @@ impl AccountTable {
 
             let market_state = SerumMarket::load(
                 &serum_market_account_info,
-                &zo_abi::serum::ID,
+                &zo_abi::SERUM_DEX_PID,
                 true,
             )
             .unwrap();
@@ -149,7 +149,7 @@ impl AccountTable {
                     array_to_pubkey(&{ market.own_address }).as_ref(),
                     &market.vault_signer_nonce.to_le_bytes(),
                 ],
-                &zo_abi::serum::ID,
+                &zo_abi::SERUM_DEX_PID,
             )
             .unwrap();
 

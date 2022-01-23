@@ -40,8 +40,8 @@ pub async fn liquidate_loop(st: &'static crate::AppState, database: DbWrapper) {
         match database
             .check_all_accounts(
                 &st,
-                &zo_abi::dex::ID,
-                &zo_abi::serum::ID,
+                &zo_abi::ZO_DEX_PID,
+                &zo_abi::SERUM_DEX_PID
             )
             .await
         {

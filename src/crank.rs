@@ -138,7 +138,7 @@ fn update_funding(st: &AppState, symbol: &str, m: &zo_abi::dex::ZoDexMarket) {
             dex_market: m.own_address,
             market_bids: m.bids,
             market_asks: m.asks,
-            dex_program: zo_abi::dex::ID,
+            dex_program: zo_abi::ZO_DEX_PID,
         })
         .send();
 

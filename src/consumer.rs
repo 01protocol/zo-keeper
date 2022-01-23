@@ -174,7 +174,7 @@ fn consume(
 fn open_orders_pda(control: &Pubkey, zo_dex_market: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(
         &[control.as_ref(), zo_dex_market.as_ref()],
-        &zo_abi::dex::ID,
+        &zo_abi::ZO_DEX_PID,
     )
     .0
 }
@@ -201,7 +201,7 @@ fn consume_events(
         .accounts(zo_abi::accounts::ConsumeEvents {
             state: st.zo_state_pubkey,
             state_signer: st.zo_state_signer_pubkey,
-            dex_program: zo_abi::dex::ID,
+            dex_program: zo_abi::ZO_DEX_PID,
             market: market.own_address,
             event_queue: market.event_q,
         });
@@ -236,7 +236,7 @@ fn crank_pnl(
             state: st.zo_state_pubkey,
             state_signer: st.zo_state_signer_pubkey,
             cache: st.zo_cache_pubkey,
-            dex_program: zo_abi::dex::ID,
+            dex_program: zo_abi::ZO_DEX_PID,
             market: market.own_address,
         });
 
