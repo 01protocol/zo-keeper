@@ -32,7 +32,7 @@ pub async fn run(
             let mut last_head = 1u64 << 48;
 
             loop {
-                std::thread::sleep(Duration::from_millis(200));
+                std::thread::sleep(Duration::from_millis(250));
                 consume(
                     st,
                     &symbol,
@@ -158,12 +158,25 @@ fn consume(
     std::thread::spawn(move || {
         let _g = span.enter();
         consume_events(st, &market, limit, &control_accounts, &orders_accounts);
+
+        let mid = control_accounts.len() / 2;
+        let controls = control_accounts.split_at(mid);
+        let orders = orders_accounts.split_at(mid);
+        let margins = margin_accounts.split_at(mid);
+
         crank_pnl(
             st,
             &market,
-            &control_accounts,
-            &orders_accounts,
-            &margin_accounts,
+            &controls.0,
+            &orders.0,
+            &margins.0,
+        );
+        crank_pnl(
+            st,
+            &market,
+            &controls.1,
+            &orders.1,
+            &margins.1,
         );
     });
 

@@ -49,7 +49,7 @@ enum Command {
     /// Consume events for each market
     Consumer {
         /// Events to consume each iteration
-        #[clap(long, default_value = "8")]
+        #[clap(long, default_value = "12")]
         to_consume: usize,
 
         /// Maximum time to stay idle, in seconds
