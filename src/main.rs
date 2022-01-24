@@ -1,7 +1,4 @@
-use anchor_client::{
-    solana_sdk::{pubkey::Pubkey, signer::keypair},
-    Cluster,
-};
+use anchor_client::{solana_sdk::signer::keypair, Cluster};
 use clap::{AppSettings, Parser, Subcommand};
 use std::{env, time::Duration};
 use zo_keeper as lib;
@@ -17,10 +14,6 @@ struct Cli {
     /// from $SOLANA_PAYER_KEY instead.
     #[clap(short, long)]
     payer: Option<std::path::PathBuf>,
-
-    /// Pubkey for the zo state struct.
-    #[clap(long, env = "ZO_STATE_PUBKEY")]
-    zo_state_pubkey: Pubkey,
 
     #[clap(subcommand)]
     command: Command,
@@ -90,7 +83,6 @@ fn main() -> Result<(), lib::Error> {
     let Cli {
         cluster,
         payer,
-        zo_state_pubkey,
         command,
     } = Cli::parse();
 
@@ -105,11 +97,8 @@ fn main() -> Result<(), lib::Error> {
         },
     };
 
-    let app_state: &'static _ = Box::leak(Box::new(lib::AppState::new(
-        cluster,
-        payer,
-        zo_state_pubkey,
-    )));
+    let app_state: &'static _ =
+        Box::leak(Box::new(lib::AppState::new(cluster, payer)));
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
