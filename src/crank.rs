@@ -2,7 +2,7 @@ use crate::{error::Error, AppState};
 use anchor_client::solana_sdk::instruction::AccountMeta;
 use std::{cmp::min, marker::Send, sync::Arc, time::Duration};
 use tokio::time::{Interval, MissedTickBehavior};
-use tracing::{debug, warn};
+use tracing::{info, warn};
 
 pub struct CrankConfig {
     pub cache_oracle_interval: Duration,
@@ -78,7 +78,7 @@ where
         interval.tick().await;
         if let Err(e) = tokio::task::spawn_blocking(f.clone()).await {
             if e.is_panic() {
-                warn!("task panicked: {:?}", e);
+                warn!("task panicked: {0}: {0:?}", e);
             }
         }
     }
@@ -101,8 +101,11 @@ fn cache_oracle(st: &AppState, s: &[String], accs: &[AccountMeta]) {
     let req = accs.iter().fold(req, |r, x| r.accounts(x.clone()));
 
     match req.send() {
-        Ok(sg) => debug!("{}", sg),
-        Err(e) => warn!("{}", e),
+        Ok(sg) => info!("{}", sg),
+        Err(e) => {
+            let e = Error::from(e);
+            warn!("{}", e);
+        }
     };
 }
 
@@ -120,8 +123,11 @@ fn cache_interest(st: &AppState, start: u8, end: u8) {
         .send();
 
     match res {
-        Ok(sg) => debug!("{}", sg),
-        Err(e) => warn!("{}", e),
+        Ok(sg) => info!("{}", sg),
+        Err(e) => {
+            let e = Error::from(e);
+            warn!("{}", e);
+        }
     };
 }
 
@@ -143,7 +149,10 @@ fn update_funding(st: &AppState, symbol: &str, m: &zo_abi::dex::ZoDexMarket) {
         .send();
 
     match res {
-        Ok(sg) => debug!("{}", sg),
-        Err(e) => warn!("{}", e),
+        Ok(sg) => info!("{}", sg),
+        Err(e) => {
+            let e = Error::from(e);
+            warn!("{}", e);
+        }
     };
 }
