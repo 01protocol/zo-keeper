@@ -1,8 +1,7 @@
 use anchor_client::Program;
 
 use anchor_lang::{
-    prelude::ToAccountMetas,
-    solana_program::instruction::Instruction,
+    prelude::ToAccountMetas, solana_program::instruction::Instruction,
     InstructionData,
 };
 
@@ -33,7 +32,7 @@ use crate::liquidator::{
 #[tracing::instrument(skip_all, level = "error")]
 pub async fn liquidate_loop(st: &'static crate::AppState, database: DbWrapper) {
     info!("starting...");
-    
+
     let mut last_refresh = std::time::Instant::now();
     let mut interval =
         tokio::time::interval(std::time::Duration::from_millis(250));
@@ -47,7 +46,7 @@ pub async fn liquidate_loop(st: &'static crate::AppState, database: DbWrapper) {
             .check_all_accounts(
                 &st,
                 &zo_abi::ZO_DEX_PID,
-                &zo_abi::SERUM_DEX_PID
+                &zo_abi::SERUM_DEX_PID,
             )
             .await
         {
@@ -146,26 +145,23 @@ pub fn liquidate(
         .iter()
         .zip(cache.marks)
         .map(|(order, mark)| {
-            safe_mul_i80f48(
-                I80F48::from_num(order.pos_size),
-                mark.price.into(),
-            )
+            safe_mul_i80f48(I80F48::from_num(order.pos_size), mark.price.into())
         })
         .collect();
 
     let positions = positions.iter().enumerate();
 
-    let position: Option<(usize, &I80F48)> = match positions.max_by_key(|a| a.1.abs())
-    {
-        Some(x) => {
-            if x.1.is_zero() {
-                None
-            } else {
-                Some(x)
+    let position: Option<(usize, &I80F48)> =
+        match positions.max_by_key(|a| a.1.abs()) {
+            Some(x) => {
+                if x.1.is_zero() {
+                    None
+                } else {
+                    Some(x)
+                }
             }
-        }
-        None => return Err(ErrorCode::NoPositions),
-    };
+            None => return Err(ErrorCode::NoPositions),
+        };
 
     // Pick the larger one, liquidate
     let has_positions: bool;
@@ -189,31 +185,13 @@ pub fn liquidate(
     let market_info = market_infos[position_index];
 
     let is_spot_bankrupt = colls.iter().all(|col| col < &DUST_THRESHOLD);
-    println!("is_spot_bankrupt: {}, has_positions: {}", is_spot_bankrupt, has_positions);
-    if has_positions && (-min_col <= max_position_notional.abs() || is_spot_bankrupt)
+    println!(
+        "is_spot_bankrupt: {}, has_positions: {}",
+        is_spot_bankrupt, has_positions
+    );
+    if has_positions
+        && (-min_col <= max_position_notional.abs() || is_spot_bankrupt)
     {
-        info!(
-            "Liquidating {}'s {} perp position",
-            margin.authority, position_index
-        );
-        // Cancel a perp position
-        cancel_orders(
-            program,
-            payer_pubkey,
-            margin_key,
-            &margin.control,
-            cache_key,
-            state_key,
-            state_signer,
-            &open_orders,
-            &market_info.own_address,
-            &market_info.req_q,
-            &market_info.event_q,
-            &market_info.bids,
-            &market_info.asks,
-            dex_program,
-        )?;
-
         liquidate_perp_position(
             program,
             payer_pubkey,
@@ -224,6 +202,7 @@ pub fn liquidate(
             margin,
             margin_key,
             &open_orders,
+            cache,
             cache_key,
             state,
             state_key,
@@ -234,23 +213,6 @@ pub fn liquidate(
             position_index,
             max_position_notional.is_positive(),
         )?;
-
-        // rebalance on perp
-        // call close perp position
-        /*
-        swap::close_position(
-            program,
-            state,
-            state_key,
-            state_signer,
-            payer_margin,
-            payer_margin_key,
-            payer_control,
-            &market_info,
-            dex_program,
-            position_index,
-        )?;
-        */
     } else if is_spot_bankrupt && !has_positions {
         let oo_index_result = largest_open_order(cache, control)?;
 
@@ -293,18 +255,16 @@ pub fn liquidate(
         } else {
             0
         };
-        info!(
-            "Liquidating {}'s {} spot position using {}",
-            margin.authority, col_index, quote_idx
-        );
         liquidate_spot_position(
             program,
             payer_pubkey,
+            payer_margin,
             payer_margin_key,
-            payer_control_key,
             margin_key,
             &margin.control,
+            cache,
             cache_key,
+            state,
             state_key,
             &state.collaterals[col_index].mint,
             &state.collaterals[quote_idx].mint,
@@ -359,7 +319,7 @@ pub fn liquidate(
         }
     } else if let Some(_order_index) = largest_open_order(cache, control)? {
         // Must cancel perp open orders
-        info!("Closing {}'s {} perp position", margin.authority, col_index);
+        info!("Closing {}'s {} perp order", margin.authority, col_index);
         cancel(
             program,
             dex_program,
@@ -506,6 +466,7 @@ fn liquidate_perp_position(
     liqee_margin: &Margin,
     liqee_margin_key: &Pubkey,
     liqee_open_orders: &Pubkey,
+    cache: &Cache,
     cache_key: &Pubkey,
     state: &State,
     state_key: &Pubkey,
@@ -545,7 +506,17 @@ fn liquidate_perp_position(
         program_id: program.id(),
     };
 
-    let liq_ix = Instruction {
+    let mut asset_transfer_lots =
+        get_total_collateral(liqor_margin, cache, state)
+            .checked_div(cache.marks[index].price.into())
+            .unwrap()
+            .to_num::<i64>()
+            .safe_div(market_info.coin_lot_size)
+            .unwrap()
+            .safe_mul(10i64)
+            .unwrap();
+
+    let mut liq_ix = Instruction {
         accounts: ix_accounts::LiquidatePerpPosition {
             state: *state_key,
             cache: *cache_key,
@@ -567,9 +538,7 @@ fn liquidate_perp_position(
         }
         .to_account_metas(None),
         data: instruction::LiquidatePerpPosition {
-            asset_transfer_lots: (i64::MAX as u64)
-                .safe_div(market_info.coin_lot_size)
-                .unwrap(),
+            asset_transfer_lots: asset_transfer_lots as u64,
         }
         .data(),
         program_id: program.id(),
@@ -589,97 +558,159 @@ fn liquidate_perp_position(
         liqee_was_long,
     ) {
         Ok(ix) => Some(ix),
-        Err(_e) => { span.in_scope(|| warn!("Unable to create rebalance instruction")); None }
+        Err(_e) => {
+            span.in_scope(|| warn!("Unable to create rebalance instruction"));
+            None
+        }
     };
 
-    let signature = retry_send(
-        || {
-            let request = program
-                .request()
-                .instruction(cancel_ix.clone())
-                .instruction(liq_ix.clone())
-                .options(CommitmentConfig::confirmed());
-            if let Some(ix) = rebalance_ix.clone() {
-                request.instruction(ix)
-            } else {
-                request
-            }
-        },
-        5,
-    );
+    let reduction_max = 5;
 
-    match signature {
-        Ok(tx) => {
-            span.in_scope(|| {
-                info!(
-                    "Liquidated {}'s perp. tx: {:?}",
-                    liqee_margin.authority, tx
-                )
-            });
-            Ok(())
-        }
-        Err(e) => {
-            span.in_scope(|| {
-                error!("Failed to liquidate perp position: {:?}", e)
-            });
-            Err(ErrorCode::LiquidationFailure)
+    let mut signature;
+    for _reduction in 0..reduction_max {
+        signature = retry_send(
+            || {
+                let request = program
+                    .request()
+                    .instruction(cancel_ix.clone())
+                    .instruction(liq_ix.clone())
+                    .options(CommitmentConfig::confirmed());
+                if let Some(ix) = rebalance_ix.clone() {
+                    request.instruction(ix)
+                } else {
+                    request
+                }
+            },
+            5,
+        );
+
+        match signature {
+            Ok(tx) => {
+                span.in_scope(|| {
+                    info!(
+                        "Liquidated {}'s perp. tx: {:?}",
+                        liqee_margin.authority, tx
+                    )
+                });
+                return Ok(());
+            }
+            Err(e) => match e {
+                ErrorCode::LiquidationOverExposure => {
+                    asset_transfer_lots /= 2;
+                    liq_ix.data = instruction::LiquidatePerpPosition {
+                        asset_transfer_lots: asset_transfer_lots as u64,
+                    }
+                    .data();
+                }
+                _ => {
+                    span.in_scope(|| {
+                        error!("Failed to liquidate perp position: {:?}", e)
+                    });
+                    return Err(ErrorCode::LiquidationFailure);
+                }
+            },
         }
     }
+
+    Err(ErrorCode::LiquidationFailure)
 }
 
 fn liquidate_spot_position(
     program: &Program,
     payer_pubkey: &Pubkey,
+    liqor_margin: &Margin,
     liqor_margin_key: &Pubkey,
-    liqor_control_key: &Pubkey,
     liqee_margin_key: &Pubkey,
     liqee_control_key: &Pubkey,
+    cache: &Cache,
     cache_key: &Pubkey,
+    state: &State,
     state_key: &Pubkey,
     asset_mint: &Pubkey,
     quote_mint: &Pubkey,
 ) -> Result<(), ErrorCode> {
     let span = error_span!("liquidate_spot_position");
-    // Can probably save some of these variables in the ds.
-    // e.g. the state_signer and open_orders.
 
-    let signature = retry_send(
-        || {
-            program
-                .request()
-                .accounts(ix_accounts::LiquidateSpotPosition {
-                    state: *state_key,
-                    cache: *cache_key,
-                    liqor: *payer_pubkey,
-                    liqor_margin: *liqor_margin_key,
-                    liqor_control: *liqor_control_key,
-                    liqee_margin: *liqee_margin_key,
-                    liqee_control: *liqee_control_key,
-                    asset_mint: *asset_mint,
-                    quote_mint: *quote_mint,
-                })
-                .args(instruction::LiquidateSpotPosition {
-                    asset_transfer_amount: i64::MIN / 1_000_000,
-                })
-                .options(CommitmentConfig::confirmed())
-        },
-        5,
-    );
+    let collateral_info = state
+        .collaterals
+        .iter()
+        .find(|a| a.mint == *asset_mint)
+        .unwrap();
+    let spot_price: I80F48 = get_oracle(cache, &collateral_info.oracle_symbol)
+        .unwrap()
+        .price
+        .into();
 
-    match signature {
-        Ok(tx) => {
-            span.in_scope(|| {
-                info!("Liquidated {}'s spot. tx: {:?}", liqee_margin_key, tx)
-            });
-            Ok(())
+    let mut asset_transfer_amount =
+        get_total_collateral(liqor_margin, cache, state)
+            .checked_div(spot_price)
+            .unwrap()
+            .to_num::<i64>()
+            .safe_div(10i64.pow(collateral_info.decimals as u32))
+            .unwrap()
+            .safe_mul(10i64)
+            .unwrap();
+
+    let mut liq_ix = Instruction {
+        accounts: ix_accounts::LiquidateSpotPosition {
+            state: *state_key,
+            cache: *cache_key,
+            liqor: *payer_pubkey,
+            liqor_margin: *liqor_margin_key,
+            liqor_control: liqor_margin.control,
+            liqee_margin: *liqee_margin_key,
+            liqee_control: *liqee_control_key,
+            asset_mint: *asset_mint,
+            quote_mint: *quote_mint,
         }
-        Err(e) => {
-            span.in_scope(|| {
-                error!("Failed to liquidate spot position: {:?}", e)
-            });
-            Err(ErrorCode::LiquidationFailure)
+        .to_account_metas(None),
+        data: instruction::LiquidateSpotPosition {
+            asset_transfer_amount,
+        }
+        .data(),
+        program_id: program.id(),
+    };
+
+    let reduction_max = 5;
+    for _reduction in 0..reduction_max {
+        let signature = retry_send(
+            || {
+                program
+                    .request()
+                    .instruction(liq_ix.clone())
+                    .options(CommitmentConfig::confirmed())
+            },
+            5,
+        );
+
+        match signature {
+            Ok(tx) => {
+                span.in_scope(|| {
+                    info!(
+                        "Liquidated {}'s spot. tx: {:?}",
+                        liqee_margin_key, tx
+                    )
+                });
+                return Ok(());
+            }
+            Err(e) => match e {
+                ErrorCode::LiquidationOverExposure => {
+                    asset_transfer_amount /= 2;
+                    liq_ix.data = instruction::LiquidateSpotPosition {
+                        asset_transfer_amount,
+                    }
+                    .data();
+                }
+                _ => {
+                    span.in_scope(|| {
+                        error!("Failed to liquidate spot position: {:?}", e)
+                    });
+                    return Err(ErrorCode::LiquidationFailure);
+                }
+            },
         }
     }
+    return Err(ErrorCode::LiquidationFailure);
 }
 
 fn settle_bankruptcy(

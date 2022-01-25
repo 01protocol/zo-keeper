@@ -8,9 +8,9 @@
  * then deal with compression.
 */
 use crate::liquidator::{
-    error::ErrorCode, liquidation, margin_utils::*, math::*, utils::*,
+    error::ErrorCode, liquidation, margin_utils::*, utils::*,
 };
-use fixed::types::I80F48;
+
 use serum_dex::state::{
     Market as SerumMarket, MarketState as SerumMarketState,
 };
@@ -24,7 +24,7 @@ use std::{
 use tracing::{error, error_span, info};
 use zo_abi::{
     dex::ZoDexMarket as MarketState, Cache, Control, FractionType, Margin,
-    State, WrappedI80F48, MAX_MARKETS,
+    State, MAX_MARKETS,
 };
 
 // Let's start with a simple hashtable
@@ -433,27 +433,7 @@ impl DbWrapper {
     ) -> Result<(bool, bool), ErrorCode> {
         // Do the math on the margin account.
         let span = error_span!("is_liquidatable");
-        let mut col = I80F48::ZERO;
-
-        // TODO: make as fn in margin_utils.
-        for (i, &coll) in { margin.collateral }.iter().enumerate() {
-            if coll == WrappedI80F48::zero() {
-                continue;
-            }
-
-            let oracle =
-                get_oracle(cache, &state.collaterals[i].oracle_symbol).unwrap();
-            let borrow_cache = cache.borrow_cache[i];
-            let usdc_col = safe_mul_i80f48(coll.into(), oracle.price.into());
-
-            let accrued = if coll > WrappedI80F48::zero() {
-                safe_mul_i80f48(usdc_col, borrow_cache.supply_multiplier.into())
-            } else {
-                safe_mul_i80f48(usdc_col, borrow_cache.borrow_multiplier.into())
-            };
-
-            col = safe_add_i80f48(col, accrued);
-        }
+        let col = get_total_collateral(margin, cache, state);
 
         let control = match table.get_control_from_margin(margin) {
             Some(pair) => pair.1,

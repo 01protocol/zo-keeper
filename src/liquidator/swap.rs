@@ -179,6 +179,7 @@ pub fn swap_asset(
     }
 }
 
+#[allow(dead_code)]
 pub fn close_position(
     program: &Program,
     state: &State,

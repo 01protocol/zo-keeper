@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 devnet = ["zo-abi/devnet"]
-default = []
+default = ["devnet"]
 
 [dependencies]
 zo-abi = { path = "./abi" }

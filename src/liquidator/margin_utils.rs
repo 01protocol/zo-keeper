@@ -458,3 +458,33 @@ pub fn has_open_orders(
     let result = largest_open_order(cache, control)?;
     Ok(result.is_some())
 }
+
+pub fn get_total_collateral(
+    margin: &Margin,
+    cache: &Cache,
+    state: &State, 
+) -> I80F48 {
+    let mut total: I80F48 = I80F48::ZERO;
+    // Estimate using mark prices.
+
+    for (i, &coll) in { margin.collateral }.iter().enumerate() {
+        if coll == WrappedI80F48::zero() {
+            continue;
+        }
+
+        let oracle =
+            get_oracle(cache, &state.collaterals[i].oracle_symbol).unwrap();
+        let borrow_cache = cache.borrow_cache[i];
+        let usdc_col = safe_mul_i80f48(coll.into(), oracle.price.into());
+
+        let accrued = if coll > WrappedI80F48::zero() {
+            safe_mul_i80f48(usdc_col, borrow_cache.supply_multiplier.into())
+        } else {
+            safe_mul_i80f48(usdc_col, borrow_cache.borrow_multiplier.into())
+        };
+
+        total = safe_add_i80f48(total, accrued);
+    }
+
+    total
+}

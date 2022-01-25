@@ -1,6 +1,5 @@
 #[derive(Debug)]
 pub enum ErrorCode {
-    FetchAccountFailure,
     MathFailure,
     InexistentControl,
     LockFailure,
@@ -13,4 +12,6 @@ pub enum ErrorCode {
     CancelFailure,
     SettlementFailure,
     NoAsks,
+    UnrecoverableTransactionError,
+    LiquidationOverExposure,
 }

@@ -5,22 +5,24 @@ use anchor_lang::{
 
 use anchor_client::{ClientError::SolanaClientError, RequestBuilder};
 
-use solana_account_decoder::{UiAccountEncoding};
+use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
     client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
     rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
-    rpc_request::RpcError,
+    rpc_request::{RpcError, RpcResponseErrorData},
 };
 use solana_sdk::{
     account::Account, commitment_config::CommitmentConfig, pubkey::Pubkey,
     signature::Signature,
+    transaction::TransactionError,
+    instruction::InstructionError
 };
 
 use std::ops::Deref;
 
-use tracing::error;
+use tracing::{error, warn};
 
 use zo_abi::{Cache, OpenOrdersInfo, OracleCache, Symbol, MAX_MARKETS};
 
@@ -86,8 +88,9 @@ where
             v.into_iter()
                 .map(|(k, mut a)| (k, get_type_from_account::<T>(&k, &mut a)))
                 .collect()
-        }).unwrap())
-        //.map_err(|_| ErrorCode::FetchAccountFailure)
+        })
+        .unwrap())
+    //.map_err(|_| ErrorCode::FetchAccountFailure)
 }
 
 fn get_oracle_index(cache: &Cache, s: &Symbol) -> Option<usize> {
@@ -95,15 +98,10 @@ fn get_oracle_index(cache: &Cache, s: &Symbol) -> Option<usize> {
         return None;
     }
 
-    (&cache.oracles)
-        .binary_search_by_key(s, |&x| x.symbol)
-        .ok()
+    (&cache.oracles).binary_search_by_key(s, |&x| x.symbol).ok()
 }
 
-pub fn get_oracle<'a>(
-    cache: &'a Cache,
-    s: &Symbol,
-) -> Option<&'a OracleCache> {
+pub fn get_oracle<'a>(cache: &'a Cache, s: &Symbol) -> Option<&'a OracleCache> {
     Some(&cache.oracles[get_oracle_index(cache, s)?])
 }
 
@@ -151,6 +149,32 @@ pub fn array_to_pubkey(array: &[u64; 4]) -> Pubkey {
     Pubkey::new(&array_to_le_bytes(array))
 }
 
+pub fn get_preflight_error_code(
+    error: &RpcError,
+) -> Option<&u32> {
+    let mut error_code = None;
+
+    if let RpcError::RpcResponseError {
+        code: _,
+        message: _,
+        data,
+    } = error {
+        if let RpcResponseErrorData::SendTransactionPreflightFailure(
+            result
+        ) = data {
+            if let Some(tx_err) = &result.err {
+                if let TransactionError::InstructionError(_, ix_err) = tx_err {
+                    if let InstructionError::Custom(code) = ix_err {
+                        error_code = Some(code);
+                    }
+                }
+            }
+        }
+    } 
+
+    error_code
+}
+
 #[tracing::instrument(skip_all, level = "error")]
 pub fn retry_send<'a>(
     make_builder: impl Fn() -> RequestBuilder<'a>,
@@ -166,29 +190,59 @@ pub fn retry_send<'a>(
                 return Ok(response);
             }
             Err(e) => {
-                last_error = Some(e);
+                if let SolanaClientError(ClientError {
+                    request: _,
+                    kind,
+                }) = e
+                {
+                    match &kind {
+                        ClientErrorKind::RpcError(e) => {
+                            match get_preflight_error_code(e) {
+                                Some(&code) => {
+                                    if code == 6006 || code == 6016 || code == 6046 {
+                                        warn!("Retrying with smaller liquidation");
+                                        return Err(ErrorCode::LiquidationOverExposure);
+                                    }
+                                }
+                                None => {
+                                    warn!("Got rpc error: {:?}", e);
+                                    return Err(
+                                        ErrorCode::UnrecoverableTransactionError,
+                                    );
+                                }
+                            }
+                        }
+                        ClientErrorKind::Reqwest(e) => {
+                            warn!("Got reqwest error: {:?}", e);
+                        }
+                        ClientErrorKind::TransactionError(e) => {
+                            warn!("Got transaction error: {:?}", e);
+                        }
+                        _ => {
+                            return Err(
+                                ErrorCode::UnrecoverableTransactionError,
+                            );
+                        }
+                    }
+                    last_error = Some(kind);
+                }
             }
         };
     }
 
-    let ix = make_builder().instructions().unwrap();
-
     if let Some(e) = last_error {
-        if let SolanaClientError(ClientError {
-            request: _,
-            kind:
-                ClientErrorKind::RpcError(RpcError::RpcResponseError {
-                    code: _,
-                    message: _error_msg,
-                    data: d,
-                }),
+        if let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+            code: c,
+            message: error_msg,
+            data: d,
         }) = e
         {
-            error!("Failed to send request. {:?}", d);
+            error!("Failed to send request. message: {:?}, data: {:?}. Code: {}", error_msg, d, c);
         } else {
-            error!("Failed to send request {:?}", e);
+            error!("Failed to send request with error {:?}", e);
         }
     } else {
+        let ix = make_builder().instructions().unwrap();
         error!("Failed to send request {:?}", ix);
     }
 
