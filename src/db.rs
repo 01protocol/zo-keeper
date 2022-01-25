@@ -5,7 +5,7 @@ use mongodb::{
     Collection, Database, IndexModel,
 };
 use serde::Serialize;
-use std::time::SystemTime;
+use std::{collections::HashMap, time::SystemTime};
 use tracing::{debug, info};
 
 #[derive(Serialize)]
@@ -95,6 +95,27 @@ pub struct BalanceChange {
     pub margin: String,
     pub symbol: String,
     pub amount: i64,
+}
+
+#[derive(Serialize)]
+pub struct Swap {
+    pub time: i64,
+    pub sig: String,
+    pub margin: String,
+    #[serde(rename = "baseSymbol")]
+    pub base_symbol: String,
+    #[serde(rename = "quoteSymbol")]
+    pub quote_symbol: String,
+    #[serde(rename = "baseDelta")]
+    pub base_delta: i64,
+    #[serde(rename = "quoteDelta")]
+    pub quote_delta: i64,
+}
+
+#[derive(Serialize)]
+pub struct OpenInterest {
+    time: i64,
+    values: HashMap<String, i64>,
 }
 
 #[tracing::instrument(
@@ -188,7 +209,12 @@ simple_update_impl! {
     (RealizedPnl, "rpnl", doc! { "symbol": 1, "sig": 1 }),
     (Liquidation, "liq", doc! { "sig": 1 }),
     (Bankruptcy, "bank", doc! { "sig": 1 }),
-    (BalanceChange, "balanceChange", doc! { "sig": 1, "symbol": 1, "margin": 1 })
+    (BalanceChange, "balanceChange", doc! { "sig": 1, "symbol": 1, "margin": 1 }),
+    (Swap, "swap", doc! {
+        "sig": 1,
+        "baseSymbol": 1, "quoteSymbol": 1,
+        "baseDelta": 1, "quoteDelta": 1,
+    }),
 }
 
 impl Trade {
@@ -312,5 +338,20 @@ impl Trade {
             .await?;
 
         Ok(())
+    }
+}
+
+impl OpenInterest {
+    pub async fn insert(
+        db: &Database,
+        time: i64,
+        values: HashMap<String, i64>,
+    ) -> Result<(), MongoError> {
+        insert(
+            &db.collection::<Self>("oi"),
+            &[Self { time, values }],
+            [IndexModel::builder().keys(doc! { "time": 1 }).build()],
+        )
+        .await
     }
 }

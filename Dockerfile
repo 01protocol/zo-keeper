@@ -4,4 +4,4 @@ RUN rustup component add rustfmt
 WORKDIR /srv
 COPY . .
 RUN cargo build --release
-CMD ["./target/release/zo-keeper", "listener"]
+CMD ./docker-heroku-cmd.sh

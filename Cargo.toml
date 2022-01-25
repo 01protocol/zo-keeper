@@ -3,6 +3,10 @@ name = "zo-keeper"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+devnet = ["zo-abi/devnet"]
+default = []
+
 [dependencies]
 zo-abi = { path = "./abi" }
 anchor-lang = "0.20.1"

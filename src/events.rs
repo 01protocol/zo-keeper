@@ -14,7 +14,7 @@ pub async fn process(
     ss: Vec<String>,
     sig: String,
 ) {
-    let (rpnl, liq, bank, bal, oracle) = parse(st, ss.iter(), sig);
+    let (rpnl, liq, bank, bal, swap, oracle) = parse(st, ss.iter(), sig);
 
     let on_err = |e| {
         let e = Error::from(e);
@@ -25,6 +25,7 @@ pub async fn process(
         db::Liquidation::update(db, &liq).map_err(on_err),
         db::Bankruptcy::update(db, &bank).map_err(on_err),
         db::BalanceChange::update(db, &bal).map_err(on_err),
+        db::Swap::update(db, &swap).map_err(on_err),
     );
 
     match oracle {
@@ -45,6 +46,7 @@ fn parse<'a>(
     Vec<db::Liquidation>,
     Vec<db::Bankruptcy>,
     Vec<db::BalanceChange>,
+    Vec<db::Swap>,
     Option<events::CacheOracleNoops>,
 ) {
     const PROG_LOG_PREFIX: &str = "Program log: ";
@@ -58,6 +60,7 @@ fn parse<'a>(
     let mut liq = Vec::new();
     let mut bank = Vec::new();
     let mut bal = Vec::new();
+    let mut swap = Vec::new();
     let mut oracle = None;
 
     let time = SystemTime::now()
@@ -169,12 +172,28 @@ fn parse<'a>(
             })
         }
 
+        if let Some(e) = load::<events::SwapLog>(&bytes) {
+            swap.push(db::Swap {
+                time,
+                sig: sig.clone(),
+                margin: e.margin_key.to_string(),
+                base_symbol: st.zo_state.collaterals[e.base_index as usize]
+                    .oracle_symbol
+                    .into(),
+                quote_symbol: st.zo_state.collaterals[e.quote_index as usize]
+                    .oracle_symbol
+                    .into(),
+                base_delta: e.base_delta,
+                quote_delta: e.quote_delta,
+            });
+        }
+
         if let Some(e) = load::<events::CacheOracleNoops>(&bytes) {
             oracle = Some(e);
         }
     }
 
-    (rpnl, liq, bank, bal, oracle)
+    (rpnl, liq, bank, bal, swap, oracle)
 }
 
 #[inline(always)]

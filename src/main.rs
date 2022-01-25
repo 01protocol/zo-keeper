@@ -6,9 +6,13 @@ use zo_keeper as lib;
 #[derive(Parser)]
 #[clap(term_width = 72, setting(AppSettings::DisableHelpSubcommand))]
 struct Cli {
-    /// Name of cluster or its RPC endpoint.
-    #[clap(short, long, env = "SOLANA_CLUSTER", default_value = "devnet")]
-    cluster: Cluster,
+    /// RPC endpoint.
+    #[clap(short, long, env = "SOLANA_RPC_URL")]
+    rpc_url: String,
+
+    /// Websocket endpoint.
+    #[clap(long, env = "SOLANA_WS_URL")]
+    ws_url: String,
 
     /// Path to keypair. If not set, the JSON encoded keypair is read
     /// from $SOLANA_PAYER_KEY instead.
@@ -81,7 +85,8 @@ fn main() -> Result<(), lib::Error> {
     }
 
     let Cli {
-        cluster,
+        rpc_url,
+        ws_url,
         payer,
         command,
     } = Cli::parse();
@@ -96,6 +101,8 @@ fn main() -> Result<(), lib::Error> {
             None => panic!("Could not load payer key,"),
         },
     };
+
+    let cluster = Cluster::Custom(rpc_url, ws_url);
 
     let app_state: &'static _ =
         Box::leak(Box::new(lib::AppState::new(cluster, payer)));
