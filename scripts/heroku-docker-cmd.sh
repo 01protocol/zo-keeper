@@ -7,6 +7,7 @@ run() {
 case "$DYNO" in
     crank.*) run crank ;;
     consumer.*) run consumer ;;
-    listener.*) run listener ;;
     liquidator.*) run liquidator ;;
+    recorder.*) run recorder ;;
+    monitor.*) run monitor ;;
 esac

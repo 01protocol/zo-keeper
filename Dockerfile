@@ -1,7 +1,12 @@
 FROM rust:latest
-RUN apt-get update && apt-get install -y libudev-dev libclang-dev
-RUN rustup component add rustfmt
+RUN apt-get update \
+    && apt-get install -y libudev-dev libclang-dev \
+    && rustup component add rustfmt
 WORKDIR /srv
 COPY . .
-RUN cargo build --release
-CMD ./docker-heroku-cmd.sh
+RUN cargo build --release \
+    && mv target/release/zo-keeper . \
+    && cargo clean \
+    && mkdir -p target/release \
+    && mv zo-keeper target/release
+CMD ./scripts/heroku-docker-cmd.sh

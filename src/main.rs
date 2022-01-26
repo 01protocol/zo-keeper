@@ -40,9 +40,6 @@ enum Command {
         update_funding_interval: Duration,
     },
 
-    /// Listen and store events into a database
-    Listener {},
-
     /// Consume events for each market
     Consumer {
         /// Events to consume each iteration
@@ -68,6 +65,12 @@ enum Command {
         #[clap(long, default_value = "0")]
         worker_index: u8,
     },
+
+    /// Listen and store events into a database
+    Recorder,
+
+    /// Monitor problematic events.
+    Monitor,
 }
 
 fn main() -> Result<(), lib::Error> {
@@ -135,7 +138,6 @@ fn main() -> Result<(), lib::Error> {
                 update_funding_interval,
             },
         ))?,
-        Command::Listener {} => rt.block_on(lib::listener::run(app_state))?,
         Command::Consumer {
             to_consume,
             max_wait,
@@ -148,6 +150,8 @@ fn main() -> Result<(), lib::Error> {
                 max_queue_length,
             },
         ))?,
+        Command::Recorder => rt.block_on(lib::recorder::run(app_state))?,
+        Command::Monitor => rt.block_on(lib::monitor::run(app_state))?,
     };
 
     Ok(())
