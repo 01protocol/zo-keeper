@@ -33,6 +33,8 @@ use zo_abi::{
 
 use crate::liquidator::{error::ErrorCode, math::SafeOp, utils::*};
 
+#[deprecated]
+#[allow(dead_code)]
 pub fn swap_asset(
     program: &Program,
     payer: &Pubkey,
@@ -177,6 +179,73 @@ pub fn swap_asset(
             Err(ErrorCode::SwapError)
         }
     }
+}
+
+pub fn make_swap_ix(
+    program: &Program,
+    payer: &Pubkey,
+    state: &State,
+    state_key: &Pubkey,
+    state_signer: &Pubkey,
+    payer_margin: &Pubkey,
+    payer_control: &Pubkey,
+    serum_market: &SerumMarketState,
+    serum_dex_program: &Pubkey,
+    serum_vault_signer: &Pubkey,
+    max_transfer_amount: u64,
+    buy_asset: bool,
+    asset_index: usize,
+) -> Result<Instruction, ErrorCode> {
+    let quote_mint = state.collaterals[0].mint;
+    let quote_vault = state.vaults[0];
+    let asset_mint = state.collaterals[asset_index].mint;
+    let asset_vault = state.vaults[asset_index];
+
+    let swap_ix = Instruction {
+        accounts: accounts::Swap {
+            authority: *payer,
+            state: *state_key,
+            state_signer: *state_signer,
+            cache: state.cache,
+            margin: *payer_margin,
+            control: *payer_control,
+            quote_mint,
+            quote_vault,
+            asset_mint,
+            asset_vault,
+            swap_fee_vault: state.swap_fee_vault,
+            serum_open_orders: state.collaterals[asset_index]
+                .serum_open_orders,
+            serum_market: array_to_pubkey(&{
+                serum_market.own_address
+            }),
+            serum_request_queue: array_to_pubkey(&{
+                serum_market.req_q
+            }),
+            serum_event_queue: array_to_pubkey(&{
+                serum_market.event_q
+            }),
+            serum_bids: array_to_pubkey(&{ serum_market.bids }),
+            serum_asks: array_to_pubkey(&{ serum_market.asks }),
+            serum_coin_vault: array_to_pubkey(&{
+                serum_market.coin_vault
+            }),
+            serum_pc_vault: array_to_pubkey(&{ serum_market.pc_vault }),
+            serum_vault_signer: *serum_vault_signer,
+            srm_spot_program: *serum_dex_program,
+            token_program: TOKEN_ID,
+            rent: RENT_ID,
+        }.to_account_metas(None),
+        data: instruction::Swap {
+            buy: buy_asset,
+            allow_borrow: false,
+            amount: max_transfer_amount,
+            min_rate: 1u64, // WARNING: this can have a lot of slippage
+        }.data(),
+        program_id: program.id(),
+    };
+
+    Ok(swap_ix)
 }
 
 #[allow(dead_code)]

@@ -21,7 +21,7 @@ use std::{
     ops::Deref,
     sync::{Arc, Mutex, MutexGuard},
 };
-use tracing::{error, error_span, info};
+use tracing::{error, error_span, info, warn};
 use zo_abi::{
     dex::ZoDexMarket as MarketState, Cache, Control, FractionType, Margin,
     State, MAX_MARKETS,
@@ -266,11 +266,8 @@ impl DbWrapper {
         dex_program: &Pubkey,
         serum_dex_program: &Pubkey,
     ) -> Result<usize, ErrorCode> {
-        let (size, handles) = self.check_all_accounts_aux(
-            st,
-            dex_program,
-            serum_dex_program,
-        )?;
+        let (size, handles) =
+            self.check_all_accounts_aux(st, dex_program, serum_dex_program)?;
         match futures::future::try_join_all(handles).await {
             Ok(_) => Ok(size),
             Err(_) => Err(ErrorCode::LiquidationFailure),
@@ -437,7 +434,11 @@ impl DbWrapper {
 
         let control = match table.get_control_from_margin(margin) {
             Some(pair) => pair.1,
-            None => return Err(ErrorCode::InexistentControl),
+            None => {
+                span.in_scope(|| warn!("No control found for {}'s margin account. Attempting to fetch...", margin.authority));
+
+                return Err(ErrorCode::InexistentControl);
+            }
         };
 
         // Have to rewrite this func to use current util instead of stored cache variables.

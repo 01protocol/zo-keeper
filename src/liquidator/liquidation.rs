@@ -125,19 +125,19 @@ pub fn liquidate(
             None => return Err(ErrorCode::NoCollateral),
         };
 
-    // TODO: Priority queue for assets
-    // [0, 1, 3, 2, 4, ...] loop through indixes and find first non-zero quote
-    let quote_info: Option<(usize, &I80F48)> =
-        match collateral_tuple.max_by_key(|a| a.1) {
-            Some(x) => {
-                if x.1.is_zero() {
-                    Some((0, &I80F48::ZERO))
-                } else {
-                    Some(x)
-                }
-            }
-            None => return Err(ErrorCode::NoCollateral),
-        };
+    // Find the highest weighted asset that is positive.
+    let mut quote_info: Option<(usize, &I80F48)> = None;
+    let mut current_weight = 0;
+    for (i, coll) in collateral_tuple {
+        if coll.is_positive() && state.collaterals[i].weight > current_weight {
+            current_weight = state.collaterals[i].weight;
+            quote_info = Some((i, &coll));
+        }
+    }
+
+    if quote_info.is_none() {
+        quote_info = Some((0, &I80F48::ZERO));
+    }
 
     // Sort the positions
     let positions: Vec<I80F48> = control
@@ -185,12 +185,9 @@ pub fn liquidate(
     let market_info = market_infos[position_index];
 
     let is_spot_bankrupt = colls.iter().all(|col| col < &DUST_THRESHOLD);
-    println!(
-        "is_spot_bankrupt: {}, has_positions: {}",
-        is_spot_bankrupt, has_positions
-    );
+
     if has_positions
-        && (-min_col <= max_position_notional.abs() || is_spot_bankrupt)
+        && (min_col.abs() <= max_position_notional.abs() || is_spot_bankrupt)
     {
         liquidate_perp_position(
             program,
@@ -255,68 +252,27 @@ pub fn liquidate(
         } else {
             0
         };
+
         liquidate_spot_position(
             program,
             payer_pubkey,
             payer_margin,
             payer_margin_key,
+            payer_control,
+            margin,
             margin_key,
-            &margin.control,
             cache,
             cache_key,
             state,
             state_key,
-            &state.collaterals[col_index].mint,
-            &state.collaterals[quote_idx].mint,
+            state_signer,
+            col_index,
+            quote_idx,
+            serum_markets,
+            serum_dex_program,
+            serum_vault_signers,
         )?;
-
-        // rebalance on spot
-        if let (Some(serum_market), Some(serum_vault_signer)) = (
-            serum_markets.get(&quote_idx),
-            serum_vault_signers.get(&quote_idx),
-        ) {
-            swap::swap_asset(
-                program,
-                payer_pubkey,
-                state,
-                state_key,
-                state_signer,
-                payer_margin_key,
-                payer_control_key,
-                serum_market,
-                serum_dex_program,
-                serum_vault_signer,
-                quote_idx,
-            )?;
-        } else {
-            warn!(
-                "No serum market for {}. Not swapping for {}",
-                quote_idx, margin.authority
-            );
-        }
-        if let (Some(serum_market), Some(serum_vault_signer)) = (
-            serum_markets.get(&col_index),
-            serum_vault_signers.get(&col_index),
-        ) {
-            swap::swap_asset(
-                program,
-                payer_pubkey,
-                state,
-                state_key,
-                state_signer,
-                payer_margin_key,
-                payer_control_key,
-                serum_market,
-                serum_dex_program,
-                serum_vault_signer,
-                col_index,
-            )?;
-        } else {
-            warn!(
-                "No serum market for {}. Not swapping for {}",
-                col_index, margin.authority
-            );
-        }
+ 
     } else if let Some(_order_index) = largest_open_order(cache, control)? {
         // Must cancel perp open orders
         info!("Closing {}'s {} perp order", margin.authority, col_index);
@@ -338,7 +294,6 @@ pub fn liquidate(
 
     // TODO: Refactor so that you return an enum
     // TODO: enum specifies swap type and relevant params.
-    // TODO: Swap is a separate function called after liquidate.
     Ok(())
 }
 
@@ -513,7 +468,7 @@ fn liquidate_perp_position(
             .to_num::<i64>()
             .safe_div(market_info.coin_lot_size)
             .unwrap()
-            .safe_mul(10i64)
+            .safe_mul(5i64) // 5x leverage
             .unwrap();
 
     let mut liq_ix = Instruction {
@@ -620,35 +575,36 @@ fn liquidate_spot_position(
     payer_pubkey: &Pubkey,
     liqor_margin: &Margin,
     liqor_margin_key: &Pubkey,
+    liqor_control: &Control,
+    liqee_margin: &Margin,
     liqee_margin_key: &Pubkey,
-    liqee_control_key: &Pubkey,
     cache: &Cache,
     cache_key: &Pubkey,
     state: &State,
     state_key: &Pubkey,
-    asset_mint: &Pubkey,
-    quote_mint: &Pubkey,
+    state_signer: &Pubkey,
+    asset_index: usize,
+    quote_index: usize,
+    serum_markets: HashMap<usize, SerumMarketState>,
+    serum_dex_program: &Pubkey,
+    serum_vault_signers: HashMap<usize, Pubkey>,
 ) -> Result<(), ErrorCode> {
     let span = error_span!("liquidate_spot_position");
 
-    let collateral_info = state
-        .collaterals
-        .iter()
-        .find(|a| a.mint == *asset_mint)
-        .unwrap();
-    let spot_price: I80F48 = get_oracle(cache, &collateral_info.oracle_symbol)
+    let asset_collateral_info = state.collaterals[asset_index];
+    let quote_collateral_info = state.collaterals[quote_index];
+
+    let spot_price: I80F48 = get_oracle(cache, &asset_collateral_info.oracle_symbol)
         .unwrap()
         .price
         .into();
 
     let mut asset_transfer_amount =
-        get_total_collateral(liqor_margin, cache, state)
+        -get_total_collateral(liqor_margin, cache, state)
             .checked_div(spot_price)
             .unwrap()
             .to_num::<i64>()
-            .safe_div(10i64.pow(collateral_info.decimals as u32))
-            .unwrap()
-            .safe_mul(10i64)
+            .safe_mul(5i64) // 5x leverage
             .unwrap();
 
     let mut liq_ix = Instruction {
@@ -659,9 +615,9 @@ fn liquidate_spot_position(
             liqor_margin: *liqor_margin_key,
             liqor_control: liqor_margin.control,
             liqee_margin: *liqee_margin_key,
-            liqee_control: *liqee_control_key,
-            asset_mint: *asset_mint,
-            quote_mint: *quote_mint,
+            liqee_control: liqee_margin.control,
+            asset_mint: asset_collateral_info.mint,
+            quote_mint: quote_collateral_info.mint,
         }
         .to_account_metas(None),
         data: instruction::LiquidateSpotPosition {
@@ -671,14 +627,95 @@ fn liquidate_spot_position(
         program_id: program.id(),
     };
 
+    let mut swap_ixs: Vec<Instruction> = Vec::new();
+
+    if let (Some(serum_market), Some(serum_vault_signer)) = (
+        serum_markets.get(&quote_index),
+        serum_vault_signers.get(&quote_index),
+    ) {
+        // Rebalance the quote (which is what was received)
+        let remove_debt = swap::make_swap_ix(
+            program,
+            payer_pubkey,
+            state,
+            state_key,
+            state_signer,
+            liqor_margin_key,
+            &liqor_margin.control,
+            serum_market,
+            serum_dex_program,
+            serum_vault_signer,
+            999_999_999_999_999u64,
+            false,
+            asset_index,
+        )?;
+
+        swap_ixs.push(remove_debt);
+    }
+
+    if let (Some(serum_market), Some(serum_vault_signer)) = (
+        serum_markets.get(&asset_index),
+        serum_vault_signers.get(&asset_index),
+    ) {
+        // Rebalance the asset (which is what was given)
+        let size_estimate = estimate_spot_liquidation_size(
+            liqor_margin,
+            liqor_control,
+            state,
+            cache,
+            asset_index,
+            Some(1.5f32)
+        )?;
+        println!("liqing {}'s {} size estimate: {}", liqee_margin.authority, asset_index, size_estimate);
+        let remove_debt = swap::make_swap_ix(
+            program,
+            payer_pubkey,
+            state,
+            state_key,
+            state_signer,
+            liqor_margin_key,
+            &liqor_margin.control,
+            serum_market,
+            serum_dex_program,
+            serum_vault_signer,
+            size_estimate,
+            true,
+            asset_index,
+        )?;
+
+        let remove_excess = swap::make_swap_ix(
+            program,
+            payer_pubkey,
+            state,
+            state_key,
+            state_signer,
+            liqor_margin_key,
+            &liqor_margin.control,
+            serum_market,
+            serum_dex_program,
+            serum_vault_signer,
+            999_999_999_999_999u64,
+            false,
+            asset_index,
+        )?;
+        
+        swap_ixs.push(remove_debt);
+        swap_ixs.push(remove_excess);
+    }
+
     let reduction_max = 5;
     for _reduction in 0..reduction_max {
         let signature = retry_send(
             || {
-                program
+                let mut request_builder = program
                     .request()
                     .instruction(liq_ix.clone())
-                    .options(CommitmentConfig::confirmed())
+                    .options(CommitmentConfig::confirmed());
+                
+                for ix in swap_ixs.clone() {
+                    request_builder = request_builder.instruction(ix);
+                }
+                request_builder
             },
             5,
         );
@@ -737,12 +774,38 @@ fn settle_bankruptcy(
         Vec::with_capacity(MAX_COLLATERALS as usize);
 
     for (i, mint) in state.collaterals.iter().map(|c| &c.mint).enumerate() {
-        if { liqee_margin.collateral[i] } >= WrappedI80F48::zero() {
+        if { liqee_margin.collateral[i] } >= WrappedI80F48::zero()
+            || mint.eq(&Pubkey::default())
+        {
             continue;
         }
+
+        let swap: Option<Instruction> = if let (Some(serum_market), Some(serum_vault_signer)) =
+            (serum_markets.get(&i), serum_vault_signers.get(&i))
+        {   
+            let amount: I80F48 = { liqee_margin.collateral[i] }.into();
+            Some(swap::make_swap_ix(
+                program,
+                liqor_key,
+                state,
+                state_key,
+                state_signer,
+                liqor_margin_key,
+                liqor_control_key,
+                serum_market,
+                serum_dex_program,
+                serum_vault_signer,
+                amount.abs().to_num(),
+                true,
+                i,
+            )?)
+        } else {
+            None
+        };
+
         signature_results.push(retry_send(
             || {
-                program
+                let request_builder = program
                     .request()
                     .accounts(ix_accounts::SettleBankruptcy {
                         state: *state_key,
@@ -756,28 +819,15 @@ fn settle_bankruptcy(
                         asset_mint: *mint,
                     })
                     .args(instruction::SettleBankruptcy {})
-                    .options(CommitmentConfig::confirmed())
+                    .options(CommitmentConfig::confirmed());
+
+                match swap.clone() {
+                    Some(ix) => request_builder.instruction(ix),
+                    None => request_builder,
+                }
             },
             5,
-        ));
-
-        if let (Some(serum_market), Some(serum_vault_signer)) =
-            (serum_markets.get(&i), serum_vault_signers.get(&i))
-        {
-            swap::swap_asset(
-                program,
-                liqor_key,
-                state,
-                state_key,
-                state_signer,
-                liqor_margin_key,
-                liqor_control_key,
-                serum_market,
-                serum_dex_program,
-                serum_vault_signer,
-                i,
-            )?;
-        }
+        )); 
     }
 
     for (i, signature) in signature_results.iter().enumerate() {

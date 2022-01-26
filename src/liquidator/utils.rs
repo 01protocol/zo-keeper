@@ -90,7 +90,6 @@ where
                 .collect()
         })
         .unwrap())
-    //.map_err(|_| ErrorCode::FetchAccountFailure)
 }
 
 fn get_oracle_index(cache: &Cache, s: &Symbol) -> Option<usize> {
@@ -175,6 +174,7 @@ pub fn get_preflight_error_code(
     error_code
 }
 
+// TODO: Refactor to take vector of ixs 
 #[tracing::instrument(skip_all, level = "error")]
 pub fn retry_send<'a>(
     make_builder: impl Fn() -> RequestBuilder<'a>,

@@ -27,7 +27,7 @@ struct PerpAccParams {
 enum MfReturnOption {
     Imf,
     Mmf,
-    Cancel
+    Cancel,
 }
 
 pub fn check_fraction_requirement(
@@ -62,18 +62,22 @@ pub fn check_fraction_requirement(
         oo_agg,
         &cache.marks,
         pm,
-        &{ cache.funding_cache }
+        &{ cache.funding_cache },
     )?;
 
-    let (has_spot_pos_notional, mut spot_imf_vec, mut spot_mmf_vec, mut spot_pos_notional_vec) =
-        get_spot_borrows(
-            return_option,
-            max_cols,
-            margin_col,
-            col_info_arr,
-            cache,
-            total_realized_pnl,
-        )?;
+    let (
+        has_spot_pos_notional,
+        mut spot_imf_vec,
+        mut spot_mmf_vec,
+        mut spot_pos_notional_vec,
+    ) = get_spot_borrows(
+        return_option,
+        max_cols,
+        margin_col,
+        col_info_arr,
+        cache,
+        total_realized_pnl,
+    )?;
 
     if has_spot_pos_notional {
         has_open_pos_notional = true;
@@ -89,7 +93,8 @@ pub fn check_fraction_requirement(
                 let omf = total_acc_value
                     .min(col + total_realized_pnl)
                     .safe_mul(1000i64)?;
-                let imf = calc_weighted_sum(pimf_vec, pos_open_notional_vec).unwrap();
+                let imf =
+                    calc_weighted_sum(pimf_vec, pos_open_notional_vec).unwrap();
                 Ok(omf > imf)
             } else {
                 Ok(true)
@@ -98,10 +103,9 @@ pub fn check_fraction_requirement(
         FractionType::Maintenance => {
             if has_open_pos_notional {
                 pmmf_vec.append(&mut spot_mmf_vec);
-                
                 let mf = total_acc_value.safe_mul(1000i64)?;
-                let mmf = calc_weighted_sum(pmmf_vec, pos_notional_vec).unwrap();
-            
+                let mmf =
+                    calc_weighted_sum(pmmf_vec, pos_notional_vec).unwrap();
                 Ok(mf > mmf)
             } else {
                 Ok(true)
@@ -113,8 +117,9 @@ pub fn check_fraction_requirement(
                 let omf = total_acc_value
                     .min(col + total_realized_pnl)
                     .safe_mul(1000)?;
-                    
-                let cmf = calc_weighted_sum(pcmf_vec, pos_open_notional_vec).unwrap();
+
+                let cmf =
+                    calc_weighted_sum(pcmf_vec, pos_open_notional_vec).unwrap();
 
                 Ok(omf > cmf)
             } else {
@@ -167,14 +172,17 @@ fn get_perp_acc_params(
         )?;
         total_acc_value = new_acc_val;
 
-        let pos_notional = safe_mul_i80f48(I80F48::from_num(oo_info.pos_size), mark)
-            .ceil()
-            .to_num::<i64>();
-        let pos_open_notional = 
-        safe_mul_i80f48(I80F48::from_num(cmp::max(
-            (oo_info.pos_size + oo_info.coin_on_bids as i64).abs(),
-            (oo_info.pos_size - oo_info.coin_on_asks as i64).abs(),
-        )), mark)
+        let pos_notional =
+            safe_mul_i80f48(I80F48::from_num(oo_info.pos_size.abs()), mark)
+                .ceil()
+                .to_num::<i64>();
+        let pos_open_notional = safe_mul_i80f48(
+            I80F48::from_num(cmp::max(
+                (oo_info.pos_size + oo_info.coin_on_bids as i64).abs(),
+                (oo_info.pos_size - oo_info.coin_on_asks as i64).abs(),
+            )),
+            mark,
+        )
         .ceil()
         .to_num::<i64>();
 
@@ -197,7 +205,8 @@ fn get_perp_acc_params(
         pos_open_notional_vec.push(pos_open_notional);
         pos_notional_vec.push(pos_notional);
 
-        total_realized_pnl = total_realized_pnl.safe_add(oo_info.realized_pnl)?;
+        total_realized_pnl =
+            total_realized_pnl.safe_add(oo_info.realized_pnl)?;
     }
 
     Ok(PerpAccParams {
@@ -254,28 +263,41 @@ fn get_spot_borrows(
         let oracle_price: I80F48 = oracle_cache.price.into();
 
         // get position notional
-        let pos_notional = safe_mul_i80f48(oracle_price, -dep).ceil().to_num::<i64>();
+        let pos_notional =
+            safe_mul_i80f48(oracle_price, -dep).ceil().to_num::<i64>();
 
         // add it to total open pos notional
         if pos_notional.is_positive() {
             has_open_pos_notional = true;
         }
-        
+
         let (imf, mmf) = match return_option {
             MfReturnOption::Imf => (
-                Some((SPOT_INITIAL_MARGIN_REQ as u32 / col_info.weight as u32) as u16 - 1000u16),
+                Some(
+                    (SPOT_INITIAL_MARGIN_REQ as u32 / col_info.weight as u32)
+                        as u16
+                        - 1000u16,
+                ),
                 None,
             ),
             MfReturnOption::Mmf => (
                 None,
-                Some((SPOT_MAINT_MARGIN_REQ as u32 / col_info.weight as u32) as u16 - 1000u16),
+                Some(
+                    (SPOT_MAINT_MARGIN_REQ as u32 / col_info.weight as u32)
+                        as u16
+                        - 1000u16,
+                ),
             ),
             MfReturnOption::Cancel => (
-                Some((SPOT_INITIAL_MARGIN_REQ as u32 / col_info.weight as u32) as u16 - 1000u16),
+                Some(
+                    (SPOT_INITIAL_MARGIN_REQ as u32 / col_info.weight as u32)
+                        as u16
+                        - 1000u16,
+                ),
                 None,
             ),
         };
-        
+
         if let Some(imf) = imf {
             imf_vec.push(imf);
         }
@@ -328,16 +350,14 @@ fn calc_acc_val(
         .unwrap();
 
     let unrealized_pnl = if pos_size > 0 {
-        let pos = 
-            safe_mul_i80f48(I80F48::from_num(pos_size), smol_mark_price)
+        let pos = safe_mul_i80f48(I80F48::from_num(pos_size), smol_mark_price)
             .floor()
             .to_num::<i64>();
         let bor = -native_pc_total;
         pos.safe_sub(bor)?
     } else {
         let pos = native_pc_total;
-        let bor = 
-            safe_mul_i80f48(I80F48::from_num(-pos_size), smol_mark_price)
+        let bor = safe_mul_i80f48(I80F48::from_num(-pos_size), smol_mark_price)
             .floor()
             .to_num::<i64>();
         pos.safe_sub(bor)?
@@ -462,7 +482,7 @@ pub fn has_open_orders(
 pub fn get_total_collateral(
     margin: &Margin,
     cache: &Cache,
-    state: &State, 
+    state: &State,
 ) -> I80F48 {
     let mut total: I80F48 = I80F48::ZERO;
     // Estimate using mark prices.
@@ -477,14 +497,112 @@ pub fn get_total_collateral(
         let borrow_cache = cache.borrow_cache[i];
         let usdc_col = safe_mul_i80f48(coll.into(), oracle.price.into());
 
-        let accrued = if coll > WrappedI80F48::zero() {
-            safe_mul_i80f48(usdc_col, borrow_cache.supply_multiplier.into())
+        let weighted_col: I80F48 = if usdc_col > I80F48::ZERO {
+            match state.collaterals[i].weight.try_into() {
+                Ok(weight) => safe_mul_i80f48(usdc_col, weight)
+                    .checked_div(I80F48::from_num(1000u16))
+                    .unwrap(),
+                Err(_) => usdc_col,
+            }
         } else {
-            safe_mul_i80f48(usdc_col, borrow_cache.borrow_multiplier.into())
+            usdc_col
+        };
+
+        let accrued = if coll > WrappedI80F48::zero() {
+            safe_mul_i80f48(weighted_col, borrow_cache.supply_multiplier.into())
+        } else {
+            safe_mul_i80f48(weighted_col, borrow_cache.borrow_multiplier.into())
         };
 
         total = safe_add_i80f48(total, accrued);
     }
 
     total
+}
+
+pub fn estimate_spot_liquidation_size(
+    // In assets
+    margin: &Margin,
+    control: &Control,
+    state: &State,
+    cache: &Cache,
+    asset_index: usize, // What the liqee gets
+    fudge: Option<f32> // Amount to increase by
+) -> Result<u64, ErrorCode> {
+    // Hidden assumption that quote is always USD.
+    let mut total_position_notional = I80F48::ZERO;
+
+    for (i, position_size) in control
+        .open_orders_agg
+        .iter()
+        .map(|oo_agg| oo_agg.pos_size)
+        .enumerate()
+    {
+        let position_notional = safe_mul_i80f48(
+            cache.marks[i].price.into(),
+            I80F48::from_num(position_size),
+        )
+        .checked_div(I80F48::from_num(1000000i64))
+        .unwrap();
+        let increment = safe_mul_i80f48(
+            I80F48::from_num(state.perp_markets[i].base_imf),
+            position_notional,
+        )
+        .checked_div(I80F48::from_num(1000i64))
+        .unwrap();
+        total_position_notional =
+            safe_add_i80f48(total_position_notional, increment);
+    }
+
+    let mut spot_position_notional = I80F48::ZERO;
+
+    for (i, &coll) in { margin.collateral }.iter().enumerate() {
+        let coll: I80F48 = safe_mul_i80f48(
+            coll.into(),
+            get_oracle(cache, &state.collaterals[i].oracle_symbol)
+                .unwrap()
+                .price
+                .into(),
+        ).checked_div(I80F48::from_num(1_000_000i64)).unwrap();
+        let weight = if coll.is_positive() {
+            I80F48::from_num(state.collaterals[i].weight)
+                .checked_div(I80F48::from_num(1000i64))
+                .unwrap()
+        } else {
+            let raw = I80F48::from_num(1.1f32)
+                .checked_div(I80F48::from_num(state.collaterals[i].weight))
+                .unwrap();
+            raw.checked_mul(I80F48::from_num(1000i64)).unwrap()
+        };
+
+        let increment = safe_mul_i80f48(coll, weight);
+        spot_position_notional =
+            safe_add_i80f48(increment, spot_position_notional);
+    }
+
+    // sub min(o, pnl)
+
+    let mut factor = I80F48::from_num(state.collaterals[asset_index].weight)
+        .checked_mul(I80F48::from_num(1000i64))
+        .unwrap();
+    factor = factor
+        .checked_div(
+            get_oracle(cache, &state.collaterals[asset_index].oracle_symbol)
+                .unwrap()
+                .price
+                .into(),
+        )
+        .unwrap();
+    
+    factor = match fudge {
+        Some(f) => factor.checked_mul(I80F48::from_num(f)).unwrap(),
+        None => factor,
+    };
+    
+    Ok(
+        safe_add_i80f48(total_position_notional, spot_position_notional)
+            .checked_mul(factor)
+            .unwrap()
+            .to_num(),
+    )
 }
