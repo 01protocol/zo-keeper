@@ -9,5 +9,4 @@ case "$DYNO" in
     consumer.*) run consumer ;;
     liquidator.*) run liquidator ;;
     recorder.*) run recorder ;;
-    monitor.*) run monitor ;;
 esac

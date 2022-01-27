@@ -68,16 +68,24 @@ fn consume(
     let t = Instant::now();
 
     let (event_q_buf, slot) = {
-        let event_q_value_and_context = st
+        let res = st
             .rpc
             .get_account_with_commitment(
                 &market.event_q,
                 CommitmentConfig::confirmed(),
-            )
-            .unwrap();
+            );
 
-        let slot = event_q_value_and_context.context.slot;
-        let buf = event_q_value_and_context.value.unwrap().data;
+        let res = match res {
+            Ok(x) => x,
+            Err(e) => {
+                let e = Error::from(e);
+                warn!("{}", e);
+                return;
+            }
+        };
+
+        let slot = res.context.slot;
+        let buf = res.value.unwrap().data;
 
         (buf, slot)
     };

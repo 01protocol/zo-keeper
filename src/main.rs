@@ -68,9 +68,6 @@ enum Command {
 
     /// Listen and store events into a database
     Recorder,
-
-    /// Monitor problematic events.
-    Monitor,
 }
 
 fn main() -> Result<(), lib::Error> {
@@ -151,7 +148,6 @@ fn main() -> Result<(), lib::Error> {
             },
         ))?,
         Command::Recorder => rt.block_on(lib::recorder::run(app_state))?,
-        Command::Monitor => rt.block_on(lib::monitor::run(app_state))?,
     };
 
     Ok(())
