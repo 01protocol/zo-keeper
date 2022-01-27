@@ -287,14 +287,7 @@ impl DbWrapper {
         let mut handles: Vec<tokio::task::JoinHandle<_>> = Vec::new();
         let span = error_span!("check_all_accounts");
         for (key, margin) in db.margin_table.clone().into_iter() {
-            /*
-             * Liquidation procedure:
-             *   1. Check if mf < mmf while omittting open orders
-             *   2. If so, cancel all their orders
-             *   3. Then, find the spot or perp market with largest position
-             *   4. Cancel that position
-             * In other words, this performs only a single position on all accounts.
-             */
+
             let (cancel_orders, liquidate) =
                 DbWrapper::is_liquidatable(&margin, &db, &db.state, &db.cache)?;
             if liquidate {
@@ -431,13 +424,15 @@ impl DbWrapper {
         // Do the math on the margin account.
         let span = error_span!("is_liquidatable");
         let col = get_total_collateral(margin, cache, state);
-
+        
         let control = match table.get_control_from_margin(margin) {
-            Some(pair) => pair.1,
+            Some((_key, control)) => control,
             None => {
-                span.in_scope(|| warn!("No control found for {}'s margin account. Attempting to fetch...", margin.authority));
-
-                return Err(ErrorCode::InexistentControl);
+                span.in_scope(|| warn!("No control found for {}'s margin account. Not checking.", margin.authority));
+                // In this case, a margin account was just created with it's control, but the listener didn't catch the control. 
+                // I.e. This account is very low risk, so just skip checking this account.
+                // TODO: Fetch the margin
+                return Ok((false, false));
             }
         };
 

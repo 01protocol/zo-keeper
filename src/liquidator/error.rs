@@ -1,6 +1,7 @@
 #[derive(Debug)]
 pub enum ErrorCode {
     MathFailure,
+    #[allow(dead_code)]
     InexistentControl,
     LockFailure,
     CollateralFailure,

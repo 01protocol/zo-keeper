@@ -28,6 +28,7 @@ enum MfReturnOption {
     Imf,
     Mmf,
     Cancel,
+    Both,
 }
 
 pub fn check_fraction_requirement(
@@ -201,6 +202,10 @@ fn get_perp_acc_params(
             MfReturnOption::Cancel => {
                 cmf_vec.push(base_imf.safe_mul(5u16)?.safe_div(8u16)?);
             }
+            MfReturnOption::Both => {
+                imf_vec.push(base_imf);
+                mmf_vec.push(base_imf.safe_div(2u16)?);
+            }
         };
         pos_open_notional_vec.push(pos_open_notional);
         pos_notional_vec.push(pos_notional);
@@ -226,7 +231,7 @@ fn get_spot_borrows(
     max_cols: usize,
     col_arr: &[WrappedI80F48; 25],
     col_info_arr: &[CollateralInfo; 25],
-    cache: &Ref<Cache>,
+    cache: &Cache,
     total_realized_pnl: i64,
 ) -> Result<(bool, Vec<u16>, Vec<u16>, Vec<i64>), ErrorCode> {
     // for omf
@@ -296,6 +301,7 @@ fn get_spot_borrows(
                 ),
                 None,
             ),
+            _ => (None, None),
         };
 
         if let Some(imf) = imf {
@@ -520,6 +526,101 @@ pub fn get_total_collateral(
     total
 }
 
+#[allow(dead_code)]
+fn calc_max_reducible(
+    weighted_sum_pimfs: i64,
+    weighted_col: i64,
+    total_acc_value: i64,
+    base_imf: u16,
+    price: I80F48,
+    liq_fee: I80F48,
+) -> Result<i64, ErrorCode> {
+    let weighted_col = weighted_col.max(0i64);
+    let numerator = weighted_sum_pimfs
+        .safe_sub(weighted_col.min(total_acc_value).safe_mul(1000i64)?)?;
+    let diff = I80F48::from_num(base_imf) - liq_fee;
+
+    let denom = safe_mul_i80f48(price, diff);
+    Ok(I80F48::from_num(numerator)
+        .checked_div(denom)
+        .unwrap()
+        .ceil()
+        .checked_to_num()
+        .unwrap())
+}
+
+#[allow(dead_code)]
+fn get_max_reducible_assets(
+    base_imf: u16,
+    liq_fee: I80F48,
+    price: I80F48,
+    weighted_col: i64,
+    max_markets: usize,
+    max_cols: usize,
+    cache: &Cache,
+    oo_agg: &[OpenOrdersInfo; 50],
+    pm: &[PerpMarketInfo; 50],
+    margin_col: &[WrappedI80F48; 25],
+    col_info_arr: &[CollateralInfo; 25],
+) -> Result<i64, ErrorCode> {
+    let PerpAccParams {
+        total_acc_value,
+        has_open_pos_notional: _,
+        total_realized_pnl,
+        mut pimf_vec,
+        mut pmmf_vec,
+        pcmf_vec: _,
+        mut pos_open_notional_vec,
+        mut pos_notional_vec,
+    } = get_perp_acc_params(
+        weighted_col,
+        MfReturnOption::Both,
+        max_markets,
+        oo_agg,
+        &cache.marks,
+        pm,
+        &{ cache.funding_cache },
+    )?;
+
+    let (
+        _spot_pos_notional,
+        mut spot_imf_vec,
+        mut spot_mmf_vec,
+        mut spot_pos_notional_vec,
+    ) = get_spot_borrows(
+        MfReturnOption::Both,
+        max_cols,
+        margin_col,
+        col_info_arr,
+        cache,
+        total_realized_pnl,
+    )?;
+
+    pimf_vec.append(&mut spot_imf_vec);
+    pmmf_vec.append(&mut spot_mmf_vec);
+    // pos_open_notional_vec.append(&mut spot_pos_notional_vec);
+    // pos_notional_vec.append(&mut spot_pos_notional_vec);
+    pos_open_notional_vec.extend(spot_pos_notional_vec.iter().clone());
+    pos_notional_vec.append(&mut spot_pos_notional_vec);
+
+    let mut weighted_sum_pimfs = 0i64;
+    for (i, &pimf) in pimf_vec.iter().enumerate() {
+        weighted_sum_pimfs += pos_open_notional_vec[i].safe_mul(pimf as i64)?;
+    }
+
+    let max_reducible = calc_max_reducible(
+        weighted_sum_pimfs,
+        weighted_col,
+        total_acc_value,
+        base_imf,
+        price,
+        liq_fee,
+    )?;
+
+    Ok(max_reducible)
+}
+
+#[allow(dead_code)]
 pub fn estimate_spot_liquidation_size(
     // In assets
     margin: &Margin,
@@ -527,9 +628,41 @@ pub fn estimate_spot_liquidation_size(
     state: &State,
     cache: &Cache,
     asset_index: usize, // What the liqee gets
-    fudge: Option<f32> // Amount to increase by
-) -> Result<u64, ErrorCode> {
-    // Hidden assumption that quote is always USD.
+    quote_index: usize,
+    fudge: Option<f64>, // Amount to increase by
+) -> Result<i64, ErrorCode> {
+    let base_imf = SPOT_INITIAL_MARGIN_REQ
+        .safe_div(state.collaterals[asset_index].weight as u64)?
+        .safe_sub(1000u64)? as u16;
+    let liq_fee = (1000 + state.collaterals[asset_index].liq_fee) as f64
+        / (1000 - state.collaterals[quote_index].liq_fee) as f64
+        - 1.0;
+    let num_lf = -1000.0
+        + state.collaterals[quote_index].weight as f64 * (1.0 + liq_fee);
+    let asset_oracle =
+        get_oracle(cache, &state.collaterals[asset_index].oracle_symbol)
+            .unwrap();
+    let asset_price: I80F48 = asset_oracle.price.into();
+    let asset_amount = get_max_reducible_assets(
+        base_imf,
+        I80F48::from_num(num_lf),
+        asset_price,
+        get_total_collateral(margin, cache, state).to_num(),
+        state.total_markets as usize,
+        state.total_collaterals as usize,
+        cache,
+        &control.open_orders_agg,
+        &state.perp_markets,
+        &{ margin.collateral },
+        &state.collaterals,
+    )?; // In smol asset
+    
+    let usdc_amount = asset_amount.safe_mul(asset_price.to_num::<i64>())?;
+    match fudge {
+        Some(f) => Ok((f * usdc_amount as f64) as i64),
+        None => Ok(usdc_amount),
+    }
+    /*
     let mut total_position_notional = I80F48::ZERO;
 
     for (i, position_size) in control
@@ -542,7 +675,7 @@ pub fn estimate_spot_liquidation_size(
             cache.marks[i].price.into(),
             I80F48::from_num(position_size),
         )
-        .checked_div(I80F48::from_num(1000000i64))
+        .checked_div(I80F48::from_num(1_000_000i64))
         .unwrap();
         let increment = safe_mul_i80f48(
             I80F48::from_num(state.perp_markets[i].base_imf),
@@ -557,6 +690,11 @@ pub fn estimate_spot_liquidation_size(
     let mut spot_position_notional = I80F48::ZERO;
 
     for (i, &coll) in { margin.collateral }.iter().enumerate() {
+        if i as u16 >= state.total_collaterals {
+            continue;
+        }
+        let symbol: String = state.collaterals[i].oracle_symbol.into();
+        println!("{} {}", i, symbol);
         let coll: I80F48 = safe_mul_i80f48(
             coll.into(),
             get_oracle(cache, &state.collaterals[i].oracle_symbol)
@@ -593,16 +731,17 @@ pub fn estimate_spot_liquidation_size(
                 .into(),
         )
         .unwrap();
-    
+
     factor = match fudge {
         Some(f) => factor.checked_mul(I80F48::from_num(f)).unwrap(),
         None => factor,
     };
-    
+
     Ok(
         safe_add_i80f48(total_position_notional, spot_position_notional)
             .checked_mul(factor)
             .unwrap()
             .to_num(),
     )
+    */
 }

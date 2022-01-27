@@ -202,6 +202,21 @@ pub fn retry_send<'a>(
                                     if code == 6006 || code == 6016 || code == 6046 {
                                         warn!("Retrying with smaller liquidation");
                                         return Err(ErrorCode::LiquidationOverExposure);
+                                    } else if code == 6007 || code == 6012 || code == 6011 {
+                                        warn!("Account is not liquidatable");
+                                        return Err(
+                                            ErrorCode::UnrecoverableTransactionError,
+                                        );
+                                    } else if code == 6017 {
+                                        warn!("Account was already liquidated");
+                                        return Err(
+                                            ErrorCode::UnrecoverableTransactionError,
+                                        );
+                                    } else if code == 6052 {
+                                        warn!("Account has unliquidated spot, possibly already liquidated.");
+                                        return Err(
+                                            ErrorCode::UnrecoverableTransactionError,
+                                        );
                                     }
                                 }
                                 None => {
