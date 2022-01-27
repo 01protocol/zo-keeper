@@ -13,7 +13,7 @@ join() {
     r=$(item "$1")
     shift
 
-    while [ -n "$1" ]; do
+    while [ $# -gt 0 ]; do
         r="$r, $(item "$1")"
         shift
     done
