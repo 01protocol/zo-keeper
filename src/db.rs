@@ -206,10 +206,18 @@ macro_rules! simple_update_impl {
 
 simple_update_impl! {
     (Funding, "funding", doc! { "symbol": 1, "lastUpdated": 1 }),
-    (RealizedPnl, "rpnl", doc! { "symbol": 1, "sig": 1 }),
-    (Liquidation, "liq", doc! { "sig": 1 }),
-    (Bankruptcy, "bank", doc! { "sig": 1 }),
-    (BalanceChange, "balanceChange", doc! { "sig": 1, "symbol": 1, "margin": 1 }),
+    (RealizedPnl, "rpnl", doc! {
+        "sig": 1, "symbol": 1, "margin": 1, "pnl": 1
+    }),
+    (Liquidation, "liq", doc! {
+        "sig": 1, "liqeeMargin": 1, "assetsToLiqor": 1
+    }),
+    (Bankruptcy, "bank", doc! {
+        "sig": 1, "liqeeMargin": 1, "assetsToLiqor": 1
+    }),
+    (BalanceChange, "balanceChange", doc! {
+        "sig": 1, "symbol": 1, "margin": 1, "amount": 1,
+    }),
     (Swap, "swap", doc! {
         "sig": 1,
         "baseSymbol": 1, "quoteSymbol": 1,
