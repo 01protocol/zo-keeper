@@ -1,7 +1,7 @@
 use crate::{db, error::Error, AppState};
 use anchor_client::{
     solana_client::rpc_config::{
-        RpcAccountInfoConfig, RpcTransactionLogsConfig,
+        RpcAccountInfoConfig, RpcTransactionConfig, RpcTransactionLogsConfig,
         RpcTransactionLogsFilter,
     },
     solana_sdk::{commitment_config::CommitmentConfig, signature::Signature},
@@ -15,9 +15,9 @@ use std::{
     collections::HashMap,
     env,
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
-use tracing::{debug, info, warn, Instrument};
+use tracing::{debug, info, trace, warn, Instrument};
 
 #[cfg(not(feature = "devnet"))]
 static DB_NAME: &str = "keeper";
@@ -118,7 +118,6 @@ async fn poll_logs(st: &'static AppState, db: &'static mongodb::Database) {
 
     loop {
         interval.tick().await;
-        let t = Instant::now();
 
         // > The result field will be an array of transaction signature
         // > information, ordered from newest to oldest transaction.
@@ -131,7 +130,11 @@ async fn poll_logs(st: &'static AppState, db: &'static mongodb::Database) {
         .unwrap();
 
         let sigs = match sigs {
-            Ok(x) => x,
+            Ok(x) => x
+                .into_iter()
+                .take(200)
+                .filter(|sg| sg.err.is_none() && sg.slot > last_slot)
+                .collect::<Vec<_>>(),
             Err(e) => {
                 let e = Error::from(e);
                 warn!("{}", e);
@@ -139,55 +142,62 @@ async fn poll_logs(st: &'static AppState, db: &'static mongodb::Database) {
             }
         };
 
-        let txs = sigs
-            .into_iter()
-            .take(200)
-            .filter(|sg| sg.err.is_none() && sg.slot > last_slot)
-            .map(|sg| {
-                tokio::task::spawn_blocking(move || {
-                    use std::str::FromStr;
+        if sigs.is_empty() {
+            trace!("0 signatures, skipping");
+            continue;
+        }
 
-                    st.rpc
-                        .get_transaction(
-                            &Signature::from_str(&sg.signature).unwrap(),
-                            UiTransactionEncoding::Base64,
-                        )
-                        .map(|x| (sg.signature, x))
-                })
-            });
+        debug!("processing {} signatures", sigs.len());
 
-        let txs: Result<Vec<_>, _> = futures::future::try_join_all(txs)
-            .await
-            .unwrap()
-            .into_iter()
-            .collect();
-
-        let txs = match txs {
-            Ok(l) => l,
-            Err(e) => {
-                let e = Error::from(e);
-                warn!("{}", e);
-                continue;
-            }
-        };
-
+        let handle = tokio::runtime::Handle::try_current().unwrap();
         let span = tracing::Span::current();
 
-        debug!(
-            "parsing {} txs after {}ms",
-            txs.len(),
-            t.elapsed().as_millis()
-        );
+        for sg in sigs {
+            let handle = handle.clone();
+            let span = span.clone();
 
-        for (sg, l) in txs.into_iter() {
-            if let Some(ss) = l.transaction.meta.and_then(|x| x.log_messages) {
-                tokio::spawn(
-                    crate::events::process(st, db, ss, sg)
-                        .instrument(span.clone()),
+            last_slot = std::cmp::max(last_slot, sg.slot);
+
+            tokio::task::spawn_blocking(move || {
+                use std::str::FromStr;
+                let _g = span.enter();
+                debug!("processing: {}", sg.signature);
+
+                // The signatures are received with "finalized" commitment,
+                // and the transaction itself is received with "confirmed".
+                // This avoid the issue where the transaction returns null
+                // sometimes even though the signature is finalized.
+                let res = st.rpc.get_transaction_with_config(
+                    &Signature::from_str(&sg.signature).unwrap(),
+                    RpcTransactionConfig {
+                        encoding: Some(UiTransactionEncoding::Base64),
+                        commitment: Some(CommitmentConfig::confirmed()),
+                    },
                 );
 
-                last_slot = std::cmp::max(last_slot, l.slot);
-            }
+                match res {
+                    Ok(tx) => {
+                        if let Some(ss) =
+                            tx.transaction.meta.and_then(|x| x.log_messages)
+                        {
+                            handle.block_on(
+                                crate::events::process(
+                                    st,
+                                    db,
+                                    ss,
+                                    sg.signature,
+                                )
+                                .instrument(span.clone()),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        let e = Error::from(e);
+                        warn!("{}", e);
+                        return;
+                    }
+                };
+            });
         }
     }
 }
