@@ -635,7 +635,7 @@ fn liquidate_spot_position(
         serum_vault_signers.get(&quote_index),
     ) {
         // Rebalance the quote (which is what was received)
-        let remove_debt = swap::make_swap_ix(
+        let remove_quote = swap::make_swap_ix(
             program,
             payer_pubkey,
             state,
@@ -651,7 +651,7 @@ fn liquidate_spot_position(
             quote_index,
         )?;
 
-        swap_ixs.push(remove_debt);
+        swap_ixs.push(remove_quote);
     }
 
     if let (Some(serum_market), Some(serum_vault_signer)) = (
@@ -674,7 +674,7 @@ fn liquidate_spot_position(
             liqee_margin.authority, asset_index, size_estimate
         );
         */
-        let remove_debt = swap::make_swap_ix(  // amount is what is what is being sold  always usdc here
+        let remove_debt = swap::make_swap_ix(  // amount is what is what is being sold always usdc here
             program,
             payer_pubkey,
             state,
@@ -685,7 +685,7 @@ fn liquidate_spot_position(
             serum_market,
             serum_dex_program,
             serum_vault_signer,
-            debt_amount * 2, // TODO: Estimate the amount to repay, or perform fetches after. 
+            debt_amount, // TODO: Estimate the amount to repay, or perform fetches after. 
             true,
             asset_index,
         )?;

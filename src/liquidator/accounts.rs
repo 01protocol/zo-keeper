@@ -427,10 +427,10 @@ impl DbWrapper {
         
         let control = match table.get_control_from_margin(margin) {
             Some((_key, control)) => control,
-            None => {
-                span.in_scope(|| warn!("No control found for {}'s margin account. Not checking.", margin.authority));
+            None => {                
                 // In this case, a margin account was just created with it's control, but the listener didn't catch the control. 
                 // I.e. This account is very low risk, so just skip checking this account.
+                // It will be fetched the next time all accounts are fetched, i.e. in five minutes
                 // TODO: Fetch the margin
                 return Ok((false, false));
             }
