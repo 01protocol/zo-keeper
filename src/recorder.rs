@@ -318,7 +318,7 @@ async fn poll_update_funding(
             .map(|(symbol, m)| db::Funding {
                 symbol: symbol.clone(),
                 funding_index: { m.funding_index }.to_string(),
-                last_updated: m.last_updated as i64,
+                time: m.last_updated as i64,
             })
             .collect();
 

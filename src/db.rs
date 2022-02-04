@@ -29,8 +29,8 @@ pub struct Funding {
     pub symbol: String,
     #[serde(rename = "fundingIndex")]
     pub funding_index: String,
-    #[serde(rename = "lastUpdated")]
-    pub last_updated: i64,
+    #[serde(rename = "time")]
+    pub time: i64,
 }
 
 #[derive(Serialize)]
@@ -205,7 +205,7 @@ macro_rules! simple_update_impl {
 }
 
 simple_update_impl! {
-    (Funding, "funding", doc! { "symbol": 1, "lastUpdated": 1 }),
+    (Funding, "funding", doc! { "symbol": 1, "time": 1 }),
     (RealizedPnl, "rpnl", doc! {
         "sig": 1, "symbol": 1, "margin": 1, "pnl": 1
     }),
