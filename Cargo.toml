@@ -2,6 +2,7 @@
 name = "zo-keeper"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.58"
 
 [features]
 devnet = ["zo-abi/devnet"]
