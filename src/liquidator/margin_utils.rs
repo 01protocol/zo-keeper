@@ -1,375 +1,21 @@
-use anchor_lang::prelude::Pubkey;
-
 use fixed::types::I80F48;
 
-use std::{cell::Ref, cmp};
+use std::cell::Ref;
 
 use zo_abi::{
-    Cache, CollateralInfo, Control, FractionType, Margin, MarkCache,
-    OpenOrdersInfo, PerpMarketInfo, State, WrappedI80F48, MAX_COLLATERALS,
-    MAX_MARKETS, SPOT_INITIAL_MARGIN_REQ, SPOT_MAINT_MARGIN_REQ,
+    Cache, Control, FractionType, Margin, State, MAX_COLLATERALS, MAX_MARKETS,
+    SPOT_INITIAL_MARGIN_REQ, SPOT_MAINT_MARGIN_REQ,
 };
 
 use crate::liquidator::{error::ErrorCode, math::*, utils::*};
 
-struct PerpAccParams {
-    total_acc_value: i64,
-    has_open_pos_notional: bool,
-    total_realized_pnl: i64,
-    pimf_vec: Vec<u16>,
-    pmmf_vec: Vec<u16>,
-    pcmf_vec: Vec<u16>,
-    pos_open_notional_vec: Vec<i64>,
-    pos_notional_vec: Vec<i64>,
-}
-
 #[derive(Clone, Copy)]
 enum MfReturnOption {
+    Mf,
     Imf,
     Mmf,
-    Cancel,
-    Both,
-}
-
-pub fn check_fraction_requirement(
-    fraction_type: FractionType,
-    col: i64, // weighted collateral adjusted for bnl fees
-    max_markets: usize,
-    max_cols: usize,
-    oo_agg: &[OpenOrdersInfo; MAX_MARKETS as usize],
-    pm: &[PerpMarketInfo; MAX_MARKETS as usize],
-    col_info_arr: &[CollateralInfo; MAX_COLLATERALS as usize],
-    margin_col: &[WrappedI80F48; MAX_COLLATERALS as usize],
-    cache: &Ref<Cache>,
-) -> Result<bool, ErrorCode> {
-    let return_option = match fraction_type {
-        FractionType::Initial => MfReturnOption::Imf,
-        FractionType::Maintenance => MfReturnOption::Mmf,
-        FractionType::Cancel => MfReturnOption::Cancel,
-    };
-    let PerpAccParams {
-        total_acc_value,
-        mut has_open_pos_notional,
-        total_realized_pnl,
-        mut pimf_vec,
-        mut pmmf_vec,
-        mut pcmf_vec,
-        mut pos_open_notional_vec,
-        mut pos_notional_vec,
-    } = get_perp_acc_params(
-        col,
-        return_option,
-        max_markets,
-        oo_agg,
-        &cache.marks,
-        pm,
-        &{ cache.funding_cache },
-    )?;
-
-    let (
-        has_spot_pos_notional,
-        mut spot_imf_vec,
-        mut spot_mmf_vec,
-        mut spot_pos_notional_vec,
-    ) = get_spot_borrows(
-        return_option,
-        max_cols,
-        margin_col,
-        col_info_arr,
-        cache,
-        total_realized_pnl,
-    )?;
-
-    if has_spot_pos_notional {
-        has_open_pos_notional = true;
-    }
-
-    pos_open_notional_vec.extend(spot_pos_notional_vec.iter().clone());
-    pos_notional_vec.append(&mut spot_pos_notional_vec);
-
-    match fraction_type {
-        FractionType::Initial => {
-            if has_open_pos_notional {
-                pimf_vec.append(&mut spot_imf_vec);
-                let omf = total_acc_value
-                    .min(col + total_realized_pnl)
-                    .safe_mul(1000i64)?;
-                let imf =
-                    calc_weighted_sum(pimf_vec, pos_open_notional_vec).unwrap();
-                Ok(omf > imf)
-            } else {
-                Ok(true)
-            }
-        }
-        FractionType::Maintenance => {
-            if has_open_pos_notional {
-                pmmf_vec.append(&mut spot_mmf_vec);
-                let mf = total_acc_value.safe_mul(1000i64)?;
-                let mmf =
-                    calc_weighted_sum(pmmf_vec, pos_notional_vec).unwrap();
-                Ok(mf > mmf)
-            } else {
-                Ok(true)
-            }
-        }
-        FractionType::Cancel => {
-            if has_open_pos_notional {
-                pcmf_vec.append(&mut spot_imf_vec);
-                let omf = total_acc_value
-                    .min(col + total_realized_pnl)
-                    .safe_mul(1000)?;
-
-                let cmf =
-                    calc_weighted_sum(pcmf_vec, pos_open_notional_vec).unwrap();
-
-                Ok(omf > cmf)
-            } else {
-                Ok(true)
-            }
-        }
-    }
-}
-
-fn get_perp_acc_params(
-    col: i64,
-    return_option: MfReturnOption,
-    max_markets: usize,
-    open_orders_agg: &[OpenOrdersInfo; 50],
-    marks: &[MarkCache; 50],
-    perp_markets: &[PerpMarketInfo; 50],
-    funding_cache: &[i128; 50],
-) -> Result<PerpAccParams, ErrorCode> {
-    // for omf
-    let mut total_acc_value = col;
-    let mut has_open_pos_notional = false;
-    let mut total_realized_pnl = 0i64;
-
-    // for imf or mmf
-    let mut imf_vec = Vec::new();
-    let mut mmf_vec = Vec::new();
-    let mut cmf_vec = Vec::new();
-    let mut pos_notional_vec = Vec::new();
-    let mut pos_open_notional_vec = Vec::new();
-
-    for (index, oo_info) in open_orders_agg.iter().enumerate() {
-        if !(index < max_markets) {
-            break;
-        }
-        if oo_info.key == Pubkey::default() {
-            continue;
-        }
-
-        let mark = marks[index].price.into();
-
-        let new_acc_val = calc_acc_val(
-            total_acc_value,
-            mark,
-            oo_info.pos_size,
-            oo_info.native_pc_total,
-            oo_info.realized_pnl,
-            oo_info.funding_index,
-            funding_cache[index],
-            perp_markets[index].asset_decimals as u32,
-        )?;
-        total_acc_value = new_acc_val;
-
-        let pos_notional =
-            safe_mul_i80f48(I80F48::from_num(oo_info.pos_size.abs()), mark)
-                .ceil()
-                .to_num::<i64>();
-        let pos_open_notional = safe_mul_i80f48(
-            I80F48::from_num(cmp::max(
-                (oo_info.pos_size + oo_info.coin_on_bids as i64).abs(),
-                (oo_info.pos_size - oo_info.coin_on_asks as i64).abs(),
-            )),
-            mark,
-        )
-        .ceil()
-        .to_num::<i64>();
-
-        if pos_open_notional.is_positive() {
-            has_open_pos_notional = true;
-        }
-
-        let base_imf = perp_markets[index].base_imf;
-        match return_option {
-            MfReturnOption::Mmf => {
-                mmf_vec.push(base_imf.safe_div(2u16)?);
-            }
-            MfReturnOption::Imf => {
-                imf_vec.push(base_imf);
-            }
-            MfReturnOption::Cancel => {
-                cmf_vec.push(base_imf.safe_mul(5u16)?.safe_div(8u16)?);
-            }
-            MfReturnOption::Both => {
-                imf_vec.push(base_imf);
-                mmf_vec.push(base_imf.safe_div(2u16)?);
-            }
-        };
-        pos_open_notional_vec.push(pos_open_notional);
-        pos_notional_vec.push(pos_notional);
-
-        total_realized_pnl =
-            total_realized_pnl.safe_add(oo_info.realized_pnl)?;
-    }
-
-    Ok(PerpAccParams {
-        total_acc_value,
-        has_open_pos_notional,
-        total_realized_pnl,
-        pimf_vec: imf_vec,
-        pmmf_vec: mmf_vec,
-        pcmf_vec: cmf_vec,
-        pos_open_notional_vec,
-        pos_notional_vec,
-    })
-}
-
-fn get_spot_borrows(
-    return_option: MfReturnOption,
-    max_cols: usize,
-    col_arr: &[WrappedI80F48; 25],
-    col_info_arr: &[CollateralInfo; 25],
-    cache: &Cache,
-    total_realized_pnl: i64,
-) -> Result<(bool, Vec<u16>, Vec<u16>, Vec<i64>), ErrorCode> {
-    // for omf
-    let mut has_open_pos_notional = false;
-
-    // for imf or mmf
-    let mut imf_vec = Vec::new();
-    let mut mmf_vec = Vec::new();
-    let mut pos_open_notional_vec = Vec::new();
-
-    // loop through negative margin collateral
-    for (dep_index, col_info) in col_info_arr.iter().enumerate() {
-        if !(dep_index < max_cols) {
-            break;
-        }
-
-        if col_arr[dep_index] >= WrappedI80F48::zero() {
-            continue;
-        }
-
-        let bor_info = &cache.borrow_cache[dep_index];
-        let mut dep: I80F48 = calc_actual_collateral(
-            col_arr[dep_index].into(),
-            bor_info.supply_multiplier.into(),
-            bor_info.borrow_multiplier.into(),
-        )?;
-        // if collateral is USD, add the pos_realized_pnl
-        if dep_index == 0 {
-            dep += I80F48::from_num(total_realized_pnl);
-        }
-
-        // get oracle price
-        let oracle_cache = get_oracle(&cache, &col_info.oracle_symbol).unwrap();
-        let oracle_price: I80F48 = oracle_cache.price.into();
-
-        // get position notional
-        let pos_notional =
-            safe_mul_i80f48(oracle_price, -dep).ceil().to_num::<i64>();
-
-        // add it to total open pos notional
-        if pos_notional.is_positive() {
-            has_open_pos_notional = true;
-        }
-
-        let (imf, mmf) = match return_option {
-            MfReturnOption::Imf => (
-                Some(
-                    (SPOT_INITIAL_MARGIN_REQ as u32 / col_info.weight as u32)
-                        as u16
-                        - 1000u16,
-                ),
-                None,
-            ),
-            MfReturnOption::Mmf => (
-                None,
-                Some(
-                    (SPOT_MAINT_MARGIN_REQ as u32 / col_info.weight as u32)
-                        as u16
-                        - 1000u16,
-                ),
-            ),
-            MfReturnOption::Cancel => (
-                Some(
-                    (SPOT_INITIAL_MARGIN_REQ as u32 / col_info.weight as u32)
-                        as u16
-                        - 1000u16,
-                ),
-                None,
-            ),
-            _ => (None, None),
-        };
-
-        if let Some(imf) = imf {
-            imf_vec.push(imf);
-        }
-        if let Some(mmf) = mmf {
-            mmf_vec.push(mmf);
-        }
-        pos_open_notional_vec.push(pos_notional);
-    }
-
-    Ok((
-        has_open_pos_notional,
-        imf_vec,
-        mmf_vec,
-        pos_open_notional_vec,
-    ))
-}
-
-fn calc_weighted_sum(
-    factor: Vec<u16>,
-    weights: Vec<i64>,
-) -> Result<i64, ErrorCode> {
-    let mut numerator = 0i64;
-
-    for (i, &factor) in factor.iter().enumerate() {
-        numerator += (factor as i64).safe_mul(weights[i]).unwrap();
-    }
-
-    Ok(numerator)
-}
-
-fn calc_acc_val(
-    collateral: i64,
-    smol_mark_price: I80F48, // in smol usd per smol asset
-    pos_size: i64,
-    native_pc_total: i64,
-    realized_pnl: i64,
-    current_funding_index: i128,
-    market_funding_index: i128,
-    coin_decimals: u32,
-) -> Result<i64, ErrorCode> {
-    if pos_size == 0 {
-        return Ok(collateral + realized_pnl);
-    }
-
-    let funding_diff = market_funding_index.safe_sub(current_funding_index)?;
-    let unrealized_funding: i64 = (pos_size as i128)
-        .safe_mul(-funding_diff)?
-        .safe_div(10i64.pow(coin_decimals))?
-        .try_into()
-        .unwrap();
-
-    let unrealized_pnl = if pos_size > 0 {
-        let pos = safe_mul_i80f48(I80F48::from_num(pos_size), smol_mark_price)
-            .floor()
-            .to_num::<i64>();
-        let bor = -native_pc_total;
-        pos.safe_sub(bor)?
-    } else {
-        let pos = native_pc_total;
-        let bor = safe_mul_i80f48(I80F48::from_num(-pos_size), smol_mark_price)
-            .floor()
-            .to_num::<i64>();
-        pos.safe_sub(bor)?
-    };
-
-    Ok(collateral + realized_pnl + unrealized_pnl + unrealized_funding)
+    Omf,
+    Cmf,
 }
 
 pub fn get_actual_collateral_vec(
@@ -440,6 +86,432 @@ pub fn calc_actual_collateral(
     }
 }
 
+/*
+ * ###############################################################
+ * ####################  START OF OVERHAUL  ######################
+ * ###############################################################
+ * All values are reported in small units, i.e. 1,000,000 = 1 USD.
+ * This information available in the state collateral info.
+ * All values are also in I80F48 format
+ * to prevent floating point errors.
+ * Functions are meant to be stand-alone and easy to test.
+ * Also note that we don't deal with the total position open notional.
+ * It appears the same way in each formula, so it is redundant to include it.
+*/
+
+/// Make a vector of positions for the given margin.
+/// Each entry is denominated in smol assets.
+/// Does not include pnl or open orders.
+/// Mostly a helper function to interface margin and math.
+fn get_position_vector(
+    margin: &Margin,
+    control: &Control,
+) -> [I80F48; MAX_COLLATERALS + MAX_MARKETS] {
+    let mut position = [I80F48::ZERO; MAX_COLLATERALS + MAX_MARKETS];
+
+    for i in 0..MAX_COLLATERALS {
+        position[i] = margin.collateral[i].into(); // In smol
+    }
+
+    for i in 0..MAX_MARKETS {
+        position[i + MAX_COLLATERALS] =
+            I80F48::from_num(control.open_orders_agg[i].pos_size);
+    }
+
+    position
+}
+
+fn get_position_open_vector(
+    margin: &Margin,
+    control: &Control,
+) -> [I80F48; MAX_COLLATERALS + MAX_MARKETS] {
+    let mut position = get_position_vector(margin, control);
+
+    for (i, info) in control.open_orders_agg.iter().enumerate() {
+        position[i + MAX_COLLATERALS] = I80F48::from_num(
+            { info.pos_size }
+                .safe_add(info.coin_on_bids as i64)
+                .unwrap()
+                .abs(),
+        )
+        .max(I80F48::from_num(
+            { info.pos_size }
+                .safe_sub(info.coin_on_asks as i64)
+                .unwrap()
+                .abs(),
+        ));
+    }
+    position
+}
+
+/// Analogous vector for the state.
+pub fn get_price_vector(
+    state: &State,
+    cache: &Cache,
+    position: &[I80F48; MAX_COLLATERALS + MAX_MARKETS], // Needed to determine interest rates
+) -> [I80F48; MAX_COLLATERALS + MAX_MARKETS] {
+    // In sUSD/sAsset
+    let mut price = [I80F48::ZERO; MAX_COLLATERALS + MAX_MARKETS];
+
+    for i in 0..state.total_collaterals {
+        let i = i as usize;
+        let adjustment: I80F48 = if position[i].is_negative() {
+            cache.borrow_cache[i].borrow_multiplier.into()
+        } else {
+            cache.borrow_cache[i].supply_multiplier.into()
+        };
+
+        let unadjusted_price =
+            get_oracle(cache, &state.collaterals[i].oracle_symbol)
+                .unwrap()
+                .price
+                .into();
+
+        price[i] = safe_mul_i80f48(unadjusted_price, adjustment);
+    }
+
+    for i in 0..state.total_markets {
+        let i = i as usize;
+        price[i + MAX_COLLATERALS] =
+            get_oracle(cache, &state.perp_markets[i].oracle_symbol)
+                .unwrap()
+                .price
+                .into();
+    }
+
+    price
+}
+
+pub fn get_pnl_vectors(
+    control: &Control,
+    state: &State,
+    cache: &Cache,
+    funding_cache: &[I80F48; MAX_MARKETS], // In smol for the asset
+) -> (
+    [I80F48; MAX_COLLATERALS + MAX_MARKETS],
+    [I80F48; MAX_COLLATERALS + MAX_MARKETS],
+) {
+    let mut unrealized_pnls = [I80F48::ZERO; MAX_COLLATERALS + MAX_MARKETS];
+    let mut realized_pnls = [I80F48::ZERO; MAX_COLLATERALS + MAX_MARKETS];
+
+    for (i, &info) in control.open_orders_agg.iter().enumerate() {
+        if info.pos_size == 0 {
+            continue;
+        }
+        // Realized pnl calcs
+        let funding_diff = I80F48::from_num(info.funding_index)
+            .unwrapped_sub(funding_cache[i]);
+        let unrealized_funding =
+            safe_mul_i80f48(funding_diff, I80F48::from_num(info.pos_size))
+                .unwrapped_div(I80F48::from_num(
+                    10u64.pow(state.perp_markets[i].asset_decimals as u32),
+                )); // In smol asset
+
+        // Unrealized pnl calcs
+        let price = get_oracle(cache, &state.perp_markets[i].oracle_symbol)
+            .unwrap()
+            .price
+            .into();
+        
+        let unrealized_pnl = safe_mul_i80f48(
+            I80F48::from_num(info.pos_size),
+            price,
+        )
+        .unwrapped_add(I80F48::from_num(info.native_pc_total));
+
+        unrealized_pnls[i + MAX_COLLATERALS] = unrealized_pnl;
+
+        realized_pnls[i + MAX_COLLATERALS] =
+            unrealized_funding + I80F48::from_num(info.realized_pnl);
+    }
+    (realized_pnls, unrealized_pnls)
+}
+/// Get weight vector
+pub fn get_base_weight_vector(
+    state: &State,
+) -> [I80F48; MAX_COLLATERALS + MAX_MARKETS] {
+    let mut weight = [I80F48::ZERO; MAX_COLLATERALS + MAX_MARKETS];
+
+    for i in 0..state.total_collaterals as usize {
+        weight[i] = I80F48::from_num(state.collaterals[i].weight)
+            .unwrapped_div(I80F48::from_num(1000u32));
+    }
+
+    for i in 0..state.total_markets as usize {
+        weight[i + MAX_COLLATERALS] =
+            I80F48::from_num(state.perp_markets[i].base_imf)
+                .unwrapped_div(I80F48::from_num(1000u32));
+    }
+
+    weight
+}
+
+fn weight_conversion(
+    return_type: MfReturnOption,
+    position: &I80F48,
+    base_weight: &I80F48,
+    is_spot: bool,
+) -> I80F48 {
+    match return_type {
+        MfReturnOption::Mf | MfReturnOption::Omf => {
+            if is_spot && !position.is_negative() {
+                base_weight.clone()
+            } else if is_spot {
+                I80F48::ONE
+            } else {
+                I80F48::ZERO
+            }
+        }
+        MfReturnOption::Imf => {
+            if is_spot && !position.is_negative() {
+                I80F48::ZERO
+            } else if is_spot {
+                -(I80F48::from_num(SPOT_INITIAL_MARGIN_REQ)
+                    / I80F48::from_num(1_000_000))
+                .unwrapped_div(base_weight.clone())
+                .unwrapped_sub(I80F48::ONE)
+            } else {
+                let sign = if position.is_negative() { -1 } else { 1 };
+
+                sign * base_weight.clone()
+            }
+        }
+        MfReturnOption::Cmf => {
+            if is_spot && !position.is_negative() {
+                I80F48::ZERO
+            } else if is_spot {
+                -(I80F48::from_num(SPOT_INITIAL_MARGIN_REQ)
+                    / I80F48::from_num(1_000_000u64))
+                .unwrapped_div(base_weight.clone())
+                .unwrapped_sub(I80F48::ONE)
+            } else {
+                let sign = if position.is_negative() { -1 } else { 1 };
+
+                sign * safe_mul_i80f48(
+                    I80F48::from_str_binary("0.101").unwrap(),
+                    base_weight.clone(),
+                )
+            }
+        }
+        MfReturnOption::Mmf => {
+            if is_spot && !position.is_negative() {
+                I80F48::ZERO
+            } else if is_spot {
+                -(I80F48::from_num(SPOT_MAINT_MARGIN_REQ)
+                    / I80F48::from_num(1_000_000))
+                .unwrapped_div(base_weight.clone())
+                .unwrapped_sub(I80F48::ONE)
+            } else {
+                let sign = if position.is_negative() { -1 } else { 1 };
+
+                sign * safe_mul_i80f48(
+                    I80F48::from_str_binary("0.1").unwrap(),
+                    base_weight.clone(),
+                )
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn get_weight_vector(
+    return_type: MfReturnOption,
+    position: &[I80F48; MAX_COLLATERALS + MAX_MARKETS],
+    base_weight: &[I80F48; MAX_COLLATERALS + MAX_MARKETS],
+) -> [I80F48; MAX_COLLATERALS + MAX_MARKETS] {
+    base_weight
+        .iter()
+        .enumerate()
+        .zip(position.iter())
+        .map(|((i, base), pos)| {
+            weight_conversion(return_type, pos, base, i < MAX_COLLATERALS)
+        })
+        .collect::<Vec<I80F48>>()
+        .try_into()
+        .unwrap()
+}
+
+fn get_mf(
+    mf: MfReturnOption,
+    position: &[I80F48; MAX_COLLATERALS + MAX_MARKETS],
+    prices: &[I80F48; MAX_COLLATERALS + MAX_MARKETS],
+    realized_pnl: &[I80F48; MAX_COLLATERALS + MAX_MARKETS],
+    unrealized_pnl: &[I80F48; MAX_COLLATERALS + MAX_MARKETS],
+    base_weight: &[I80F48; MAX_COLLATERALS + MAX_MARKETS],
+) -> I80F48 {
+    let mut mf_value = I80F48::ZERO;
+
+    let total_realized_pnl: I80F48 = realized_pnl.iter().sum();
+    let total_unrealized_pnl: I80F48 = unrealized_pnl.iter().sum();
+
+    for i in 0..(MAX_COLLATERALS + MAX_MARKETS) {
+        let weight = weight_conversion(
+            mf,
+            &position[i],
+            &base_weight[i],
+            i < MAX_COLLATERALS,
+        );
+        let weighted_price = safe_mul_i80f48(prices[i], weight);
+
+        if i == 0 {
+            mf_value = safe_add_i80f48(
+                mf_value,
+                safe_mul_i80f48(total_realized_pnl, weight), // Already in big at t=T
+            );
+        }
+
+        mf_value = safe_add_i80f48(
+            mf_value,
+            safe_mul_i80f48(position[i], weighted_price),
+        );
+    }
+    let pos_unrealized = match mf {
+        MfReturnOption::Mf => total_unrealized_pnl,
+        MfReturnOption::Omf => total_unrealized_pnl.min(I80F48::ZERO),
+        _ => I80F48::ZERO,
+    };
+
+    mf_value + pos_unrealized
+}
+
+fn get_mf_wrapped(
+    mf: MfReturnOption,
+    margin: &Margin,
+    control: &Control,
+    state: &State,
+    cache: &Cache,
+) -> I80F48 {
+    let position_vector = match mf {
+        MfReturnOption::Imf => get_position_open_vector(margin, control),
+        MfReturnOption::Cmf => get_position_open_vector(margin, control),
+        _ => get_position_vector(margin, control),
+    };
+
+    let price_vector = get_price_vector(state, cache, &position_vector);
+
+    let weight_vector = get_base_weight_vector(state);
+
+    let funding_cache: [I80F48; MAX_MARKETS] = { cache.funding_cache }
+        .iter()
+        .map(|x| I80F48::from_num(*x)) //  i128 to I80 might not be ideal.
+        // Think if dividing here instead of in pnl and using pos_size in pnl
+        .collect::<Vec<I80F48>>()
+        .try_into()
+        .unwrap(); // This is a bruh moment
+
+    let (realized_pnl, unrealized_pnl) =
+        get_pnl_vectors(control, state, cache, &funding_cache);
+
+    get_mf(
+        mf,
+        &position_vector,
+        &price_vector,
+        &realized_pnl,
+        &unrealized_pnl,
+        &weight_vector,
+    )
+}
+
+pub fn check_mf(
+    check: FractionType,
+    margin: &Margin,
+    control: &Control,
+    state: &State,
+    cache: &Cache,
+    tolerance: I80F48, // for making sure the account is liquidatable, should be less than 1.0
+) -> bool {
+    let position_vector = match check {
+        FractionType::Initial | FractionType::Cancel => {
+            get_position_open_vector(margin, control)
+        }
+        _ => get_position_vector(margin, control),
+    };
+
+    let price_vector = get_price_vector(state, cache, &position_vector);
+
+    let weight_vector = get_base_weight_vector(state);
+
+    let funding_cache: [I80F48; MAX_MARKETS] = { cache.funding_cache }
+        .iter()
+        .map(|x| I80F48::from_num(*x)) //  i128 to I80 might not be ideal.
+        // Think if dividing here instead of in pnl and using pos_size in pnl
+        .collect::<Vec<I80F48>>()
+        .try_into()
+        .unwrap(); // This is a bruh moment
+
+    let (realized_pnl, unrealized_pnl) =
+        get_pnl_vectors(control, state, cache, &funding_cache);
+
+    match check {
+        FractionType::Initial => {
+            let omf = get_mf(
+                MfReturnOption::Omf,
+                &position_vector,
+                &price_vector,
+                &realized_pnl,
+                &unrealized_pnl,
+                &weight_vector,
+            );
+            let imf = get_mf(
+                MfReturnOption::Imf,
+                &position_vector,
+                &price_vector,
+                &realized_pnl,
+                &unrealized_pnl,
+                &weight_vector,
+            );
+            omf >= safe_mul_i80f48(imf, tolerance)
+        }
+        FractionType::Cancel => {
+            let omf = get_mf(
+                MfReturnOption::Omf,
+                &position_vector,
+                &price_vector,
+                &realized_pnl,
+                &unrealized_pnl,
+                &weight_vector,
+            );
+            let cmf = get_mf(
+                MfReturnOption::Cmf,
+                &position_vector,
+                &price_vector,
+                &realized_pnl,
+                &unrealized_pnl,
+                &weight_vector,
+            );
+            omf >= safe_mul_i80f48(cmf, tolerance)
+        }
+        FractionType::Maintenance => {
+            let mf = get_mf(
+                MfReturnOption::Mf,
+                &position_vector,
+                &price_vector,
+                &realized_pnl,
+                &unrealized_pnl,
+                &weight_vector,
+            );
+            let mmf = get_mf(
+                MfReturnOption::Mmf,
+                &position_vector,
+                &price_vector,
+                &realized_pnl,
+                &unrealized_pnl,
+                &weight_vector,
+            );
+            mf >= safe_mul_i80f48(mmf, tolerance)
+        }
+    }
+}
+
+pub fn get_total_account_value(
+    margin: &Margin,
+    control: &Control,
+    state: &State,
+    cache: &Cache,
+) -> I80F48 {
+    get_mf_wrapped(MfReturnOption::Mf, margin, control, state, cache)
+}
+
 pub fn largest_open_order(
     cache: &Cache,
     control: &Control,
@@ -485,263 +557,884 @@ pub fn has_open_orders(
     Ok(result.is_some())
 }
 
-pub fn get_total_collateral(
-    margin: &Margin,
-    cache: &Cache,
-    state: &State,
-) -> I80F48 {
-    let mut total: I80F48 = I80F48::ZERO;
-    // Estimate using mark prices.
-
-    for (i, &coll) in { margin.collateral }.iter().enumerate() {
-        if coll == WrappedI80F48::zero() {
-            continue;
-        }
-
-        let oracle =
-            get_oracle(cache, &state.collaterals[i].oracle_symbol).unwrap();
-        let borrow_cache = cache.borrow_cache[i];
-        let usdc_col = safe_mul_i80f48(coll.into(), oracle.price.into());
-
-        let weighted_col: I80F48 = if usdc_col > I80F48::ZERO {
-            match state.collaterals[i].weight.try_into() {
-                Ok(weight) => safe_mul_i80f48(usdc_col, weight)
-                    .checked_div(I80F48::from_num(1000u16))
-                    .unwrap(),
-                Err(_) => usdc_col,
-            }
-        } else {
-            usdc_col
-        };
-
-        let accrued = if coll > WrappedI80F48::zero() {
-            safe_mul_i80f48(weighted_col, borrow_cache.supply_multiplier.into())
-        } else {
-            safe_mul_i80f48(weighted_col, borrow_cache.borrow_multiplier.into())
-        };
-
-        total = safe_add_i80f48(total, accrued);
-    }
-
-    total
-}
-
-#[allow(dead_code)]
-fn calc_max_reducible(
-    weighted_sum_pimfs: i64,
-    weighted_col: i64,
-    total_acc_value: i64,
-    base_imf: u16,
-    price: I80F48,
-    liq_fee: I80F48,
-) -> Result<i64, ErrorCode> {
-    let weighted_col = weighted_col.max(0i64);
-    let numerator = weighted_sum_pimfs
-        .safe_sub(weighted_col.min(total_acc_value).safe_mul(1000i64)?)?;
-    let diff = I80F48::from_num(base_imf) - liq_fee;
-
-    let denom = safe_mul_i80f48(price, diff);
-    Ok(I80F48::from_num(numerator)
-        .checked_div(denom)
-        .unwrap()
-        .ceil()
-        .checked_to_num()
-        .unwrap())
-}
-
-#[allow(dead_code)]
-fn get_max_reducible_assets(
-    base_imf: u16,
-    liq_fee: I80F48,
-    price: I80F48,
-    weighted_col: i64,
-    max_markets: usize,
-    max_cols: usize,
-    cache: &Cache,
-    oo_agg: &[OpenOrdersInfo; 50],
-    pm: &[PerpMarketInfo; 50],
-    margin_col: &[WrappedI80F48; 25],
-    col_info_arr: &[CollateralInfo; 25],
-) -> Result<i64, ErrorCode> {
-    let PerpAccParams {
-        total_acc_value,
-        has_open_pos_notional: _,
-        total_realized_pnl,
-        mut pimf_vec,
-        mut pmmf_vec,
-        pcmf_vec: _,
-        mut pos_open_notional_vec,
-        mut pos_notional_vec,
-    } = get_perp_acc_params(
-        weighted_col,
-        MfReturnOption::Both,
-        max_markets,
-        oo_agg,
-        &cache.marks,
-        pm,
-        &{ cache.funding_cache },
-    )?;
-
-    let (
-        _spot_pos_notional,
-        mut spot_imf_vec,
-        mut spot_mmf_vec,
-        mut spot_pos_notional_vec,
-    ) = get_spot_borrows(
-        MfReturnOption::Both,
-        max_cols,
-        margin_col,
-        col_info_arr,
-        cache,
-        total_realized_pnl,
-    )?;
-
-    pimf_vec.append(&mut spot_imf_vec);
-    pmmf_vec.append(&mut spot_mmf_vec);
-    // pos_open_notional_vec.append(&mut spot_pos_notional_vec);
-    // pos_notional_vec.append(&mut spot_pos_notional_vec);
-    pos_open_notional_vec.extend(spot_pos_notional_vec.iter().clone());
-    pos_notional_vec.append(&mut spot_pos_notional_vec);
-
-    let mut weighted_sum_pimfs = 0i64;
-    for (i, &pimf) in pimf_vec.iter().enumerate() {
-        weighted_sum_pimfs += pos_open_notional_vec[i].safe_mul(pimf as i64)?;
-    }
-
-    let max_reducible = calc_max_reducible(
-        weighted_sum_pimfs,
-        weighted_col,
-        total_acc_value,
-        base_imf,
-        price,
-        liq_fee,
-    )?;
-
-    Ok(max_reducible)
-}
-
-#[allow(dead_code)]
+/// The estimate of how much asset will be liquidated in spot.
+/// This is a negative number (we are lending the i'th asset).
+/// We want to buy this asset afterwards (with USDC), so we want
+/// to denominate the result of this function is sUSD.
 pub fn estimate_spot_liquidation_size(
-    // In assets
     margin: &Margin,
     control: &Control,
     state: &State,
     cache: &Cache,
-    asset_index: usize, // What the liqee gets
+    asset_index: usize, // The asset index
     quote_index: usize,
-    fudge: Option<f64>, // Amount to increase by
-) -> Result<i64, ErrorCode> {
-    let base_imf = SPOT_INITIAL_MARGIN_REQ
-        .safe_div(state.collaterals[asset_index].weight as u64)?
-        .safe_sub(1000u64)? as u16;
-    let liq_fee = (1000 + state.collaterals[asset_index].liq_fee) as f64
-        / (1000 - state.collaterals[quote_index].liq_fee) as f64
-        - 1.0;
-    let num_lf = -1000.0
-        + state.collaterals[quote_index].weight as f64 * (1.0 + liq_fee);
-    let asset_oracle =
-        get_oracle(cache, &state.collaterals[asset_index].oracle_symbol)
-            .unwrap();
-    let asset_price: I80F48 = asset_oracle.price.into();
-    let asset_amount = get_max_reducible_assets(
-        base_imf,
-        I80F48::from_num(num_lf),
-        asset_price,
-        get_total_collateral(margin, cache, state).to_num(),
-        state.total_markets as usize,
-        state.total_collaterals as usize,
-        cache,
-        &control.open_orders_agg,
-        &state.perp_markets,
-        &{ margin.collateral },
-        &state.collaterals,
-    )?; // In smol asset
-    
-    let usdc_amount = asset_amount.safe_mul(asset_price.to_num::<i64>())?;
-    match fudge {
-        Some(f) => Ok((f * usdc_amount as f64) as i64),
-        None => Ok(usdc_amount),
-    }
-    /*
-    let mut total_position_notional = I80F48::ZERO;
+) -> Option<I80F48> {
+    let mut position = get_position_open_vector(margin, control);
 
-    for (i, position_size) in control
-        .open_orders_agg
+    let funding_cache: [I80F48; MAX_MARKETS] = { cache.funding_cache }
         .iter()
-        .map(|oo_agg| oo_agg.pos_size)
-        .enumerate()
-    {
-        let position_notional = safe_mul_i80f48(
-            cache.marks[i].price.into(),
-            I80F48::from_num(position_size),
-        )
-        .checked_div(I80F48::from_num(1_000_000i64))
-        .unwrap();
-        let increment = safe_mul_i80f48(
-            I80F48::from_num(state.perp_markets[i].base_imf),
-            position_notional,
-        )
-        .checked_div(I80F48::from_num(1000i64))
-        .unwrap();
-        total_position_notional =
-            safe_add_i80f48(total_position_notional, increment);
-    }
+        .map(|x| I80F48::from_num(*x)) //  i128 to I80 might not be ideal.
+        // Think if dividing here instead of in pnl and using pos_size in pnl
+        .collect::<Vec<I80F48>>()
+        .try_into()
+        .unwrap(); // This is a bruh moment
 
-    let mut spot_position_notional = I80F48::ZERO;
+    let price_vector = get_price_vector(state, cache, &position);
 
-    for (i, &coll) in { margin.collateral }.iter().enumerate() {
-        if i as u16 >= state.total_collaterals {
-            continue;
-        }
-        let symbol: String = state.collaterals[i].oracle_symbol.into();
-        println!("{} {}", i, symbol);
-        let coll: I80F48 = safe_mul_i80f48(
-            coll.into(),
-            get_oracle(cache, &state.collaterals[i].oracle_symbol)
-                .unwrap()
-                .price
-                .into(),
-        ).checked_div(I80F48::from_num(1_000_000i64)).unwrap();
-        let weight = if coll.is_positive() {
-            I80F48::from_num(state.collaterals[i].weight)
-                .checked_div(I80F48::from_num(1000i64))
-                .unwrap()
-        } else {
-            let raw = I80F48::from_num(1.1f32)
-                .checked_div(I80F48::from_num(state.collaterals[i].weight))
-                .unwrap();
-            raw.checked_mul(I80F48::from_num(1000i64)).unwrap()
-        };
+    let (realized_pnl, unrealized_pnl) =
+        get_pnl_vectors(control, state, cache, &funding_cache);
 
-        let increment = safe_mul_i80f48(coll, weight);
-        spot_position_notional =
-            safe_add_i80f48(increment, spot_position_notional);
-    }
+    let total_realized_pnl =
+        realized_pnl.iter().sum::<I80F48>() / price_vector[0];
 
-    // sub min(o, pnl)
+    position[0] += total_realized_pnl;
 
-    let mut factor = I80F48::from_num(state.collaterals[asset_index].weight)
-        .checked_mul(I80F48::from_num(1000i64))
-        .unwrap();
-    factor = factor
-        .checked_div(
-            get_oracle(cache, &state.collaterals[asset_index].oracle_symbol)
-                .unwrap()
-                .price
-                .into(),
-        )
-        .unwrap();
+    let weight_vector = get_base_weight_vector(state);
 
-    factor = match fudge {
-        Some(f) => factor.checked_mul(I80F48::from_num(f)).unwrap(),
-        None => factor,
-    };
+    let imf_weight =
+        get_weight_vector(MfReturnOption::Imf, &position, &weight_vector);
+    let omf_weight =
+        get_weight_vector(MfReturnOption::Omf, &position, &weight_vector);
 
-    Ok(
-        safe_add_i80f48(total_position_notional, spot_position_notional)
-            .checked_mul(factor)
+    let quote_fee = I80F48::from_num(state.collaterals[quote_index].liq_fee)
+        / I80F48::from_num(1000u32);
+    let asset_fee = I80F48::from_num(state.collaterals[asset_index].liq_fee)
+        / I80F48::from_num(1000u32);
+    let liq_fee = (I80F48::ONE + asset_fee) / (I80F48::ONE - quote_fee);
+
+    let asset_price: I80F48 =
+        get_oracle(cache, &state.collaterals[asset_index].oracle_symbol)
             .unwrap()
-            .to_num(),
-    )
-    */
+            .price
+            .into();
+
+    let denom: I80F48 = asset_price
+        * (omf_weight[quote_index] * liq_fee
+            - omf_weight[asset_index]
+            - imf_weight[quote_index]
+            + imf_weight[asset_index]);
+
+    if denom.abs() < I80F48::from_num(0.0001f64) {
+        // denom in smol so....
+        return None;
+    }
+
+    let mut numerator = unrealized_pnl.iter().sum::<I80F48>().min(I80F48::ZERO);
+
+    for i in 0..(MAX_MARKETS + MAX_COLLATERALS) {
+        numerator +=
+            position[i] * price_vector[i] * (omf_weight[i] - imf_weight[i]);
+    }
+
+    let amount = numerator.saturating_div(denom);
+
+    if amount.is_positive() {
+        let usdc_amount = amount * price_vector[asset_index];
+        Some(
+            usdc_amount
+                .min(
+                    -I80F48::from(margin.collateral[asset_index])
+                        * price_vector[asset_index],
+                )
+                .min(
+                    I80F48::from(margin.collateral[quote_index])
+                        * price_vector[quote_index],
+                ),
+        )
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anchor_lang::prelude::Pubkey;
+    use solana_client::rpc_client::RpcClient;
+    use std::str::FromStr;
+
+    #[test]
+    fn it_works() {
+        assert_eq!(2 + 2, 4);
+    }
+
+    #[test]
+    fn test_get_weights_imf() {
+        let mut position = [I80F48::ZERO; MAX_COLLATERALS + MAX_MARKETS];
+        position[0] = I80F48::from_num(450_000_000u64); // 450 USDC
+        position[1] = I80F48::from_num(-1_000_000_000i64); // 1 SOL
+
+        let mut weights = [I80F48::ZERO; MAX_COLLATERALS + MAX_MARKETS];
+        weights[0] = I80F48::ONE;
+        weights[1] = I80F48::from_num(0.9f64);
+        weights[MAX_COLLATERALS] = I80F48::from_num(0.9f64);
+
+        let adjusted_weights =
+            get_weight_vector(MfReturnOption::Imf, &position, &weights);
+
+        let mut true_weights = [I80F48::ZERO; MAX_COLLATERALS + MAX_MARKETS];
+        true_weights[0] = I80F48::ZERO;
+        true_weights[1] = -I80F48::from_num(1.1f64)
+            .unwrapped_div(I80F48::from_num(0.9f64))
+            + I80F48::ONE;
+        true_weights[MAX_COLLATERALS] = I80F48::from_num(0.9f64);
+
+        for i in 0..(MAX_COLLATERALS + MAX_MARKETS) {
+            assert!(true_weights[i].eq(&adjusted_weights[i]));
+        }
+    }
+
+    #[test]
+    fn test_get_position_vector() {
+        let rpc_client =
+            RpcClient::new("https://solana-api.syndica.io/access-token/3IAUwhDwhzjX2Fg5s9HLYfjyoAfSz80hYyOPACaVZhJsqo4HsjIzUr74aN01F8QQ/rpc".to_string());
+
+        let margins =
+            load_program_accounts::<Margin>(&rpc_client, &zo_abi::ID).unwrap();
+        let controls =
+            load_program_accounts::<Control>(&rpc_client, &zo_abi::ID).unwrap();
+
+        let mut test_margin: Option<Margin> = None;
+        for (_key, margin) in margins.iter() {
+            if margin.authority.eq(&Pubkey::from_str(
+                "AL8JFS4gjaQx89f9j8wtaNJgV76K8bw1ugvNtgvhgAnb",
+            )
+            .unwrap())
+            {
+                test_margin = Some(margin.clone());
+                break;
+            }
+        }
+
+        assert!(test_margin.is_some());
+
+        let mut test_control: Option<Control> = None;
+        for (key, control) in controls.iter() {
+            if key.eq(&test_margin.unwrap().control) {
+                test_control = Some(control.clone());
+                break;
+            }
+        }
+
+        assert!(test_control.is_some());
+
+        let position =
+            get_position_vector(&test_margin.unwrap(), &test_control.unwrap());
+        let mut true_position = [I80F48::ZERO; MAX_COLLATERALS + MAX_MARKETS];
+
+        true_position[0] = I80F48::from_num(1.604205999948498f64);
+        true_position[MAX_COLLATERALS] = I80F48::from_num(140_000_000u64); // 1 SOL
+
+        for i in 0..(MAX_COLLATERALS + MAX_MARKETS) {
+            println!("{} expected {} got {}", i, true_position[i], position[i]);
+        }
+    }
+
+    #[test]
+    fn test_get_account_value() {
+        let rpc_client =
+            RpcClient::new("https://solana-api.syndica.io/access-token/3IAUwhDwhzjX2Fg5s9HLYfjyoAfSz80hYyOPACaVZhJsqo4HsjIzUr74aN01F8QQ/rpc".to_string());
+
+        let state: State =
+            load_program_accounts::<State>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let cache: Cache =
+            load_program_accounts::<Cache>(&rpc_client, &&zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let margins =
+            load_program_accounts::<Margin>(&rpc_client, &zo_abi::ID).unwrap();
+        let controls =
+            load_program_accounts::<Control>(&rpc_client, &zo_abi::ID).unwrap();
+
+        let mut test_margin: Option<Margin> = None;
+        for (_key, margin) in margins.iter() {
+            if margin.authority.eq(&Pubkey::from_str(
+                "AL8JFS4gjaQx89f9j8wtaNJgV76K8bw1ugvNtgvhgAnb",
+            )
+            .unwrap())
+            {
+                test_margin = Some(margin.clone());
+                break;
+            }
+        }
+
+        assert!(test_margin.is_some());
+
+        let mut test_control: Option<Control> = None;
+        for (key, control) in controls.iter() {
+            if key.eq(&test_margin.unwrap().control) {
+                test_control = Some(control.clone());
+                break;
+            }
+        }
+
+        assert!(test_control.is_some());
+
+        let mf = get_mf_wrapped(
+            MfReturnOption::Mf,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+        );
+        println!("{}", mf)
+    }
+
+    #[test]
+    fn test_get_mmf() {
+        let rpc_client =
+            RpcClient::new("https://solana-api.syndica.io/access-token/3IAUwhDwhzjX2Fg5s9HLYfjyoAfSz80hYyOPACaVZhJsqo4HsjIzUr74aN01F8QQ/rpc".to_string());
+
+        let state: State =
+            load_program_accounts::<State>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let cache: Cache =
+            load_program_accounts::<Cache>(&rpc_client, &&zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let margins =
+            load_program_accounts::<Margin>(&rpc_client, &zo_abi::ID).unwrap();
+        let controls =
+            load_program_accounts::<Control>(&rpc_client, &zo_abi::ID).unwrap();
+
+        let mut test_margin: Option<Margin> = None;
+        for (_key, margin) in margins.iter() {
+            if margin.authority.eq(&Pubkey::from_str(
+                "AL8JFS4gjaQx89f9j8wtaNJgV76K8bw1ugvNtgvhgAnb",
+            )
+            .unwrap())
+            {
+                test_margin = Some(margin.clone());
+                break;
+            }
+        }
+
+        assert!(test_margin.is_some());
+
+        let mut test_control: Option<Control> = None;
+        for (key, control) in controls.iter() {
+            if key.eq(&test_margin.unwrap().control) {
+                test_control = Some(control.clone());
+                break;
+            }
+        }
+
+        assert!(test_control.is_some());
+
+        let mmf = get_mf_wrapped(
+            MfReturnOption::Mmf,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+        );
+        println!("{}", mmf)
+    }
+
+    #[test]
+    fn test_get_imf() {
+        let rpc_client =
+            RpcClient::new("https://solana-api.syndica.io/access-token/3IAUwhDwhzjX2Fg5s9HLYfjyoAfSz80hYyOPACaVZhJsqo4HsjIzUr74aN01F8QQ/rpc".to_string());
+
+        let state: State =
+            load_program_accounts::<State>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let cache: Cache =
+            load_program_accounts::<Cache>(&rpc_client, &&zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let margins =
+            load_program_accounts::<Margin>(&rpc_client, &zo_abi::ID).unwrap();
+        let controls =
+            load_program_accounts::<Control>(&rpc_client, &zo_abi::ID).unwrap();
+
+        let mut test_margin: Option<Margin> = None;
+        for (_key, margin) in margins.iter() {
+            if margin.authority.eq(&Pubkey::from_str(
+                "AL8JFS4gjaQx89f9j8wtaNJgV76K8bw1ugvNtgvhgAnb",
+            )
+            .unwrap())
+            {
+                test_margin = Some(margin.clone());
+                break;
+            }
+        }
+
+        assert!(test_margin.is_some());
+
+        let mut test_control: Option<Control> = None;
+        for (key, control) in controls.iter() {
+            if key.eq(&test_margin.unwrap().control) {
+                test_control = Some(control.clone());
+                break;
+            }
+        }
+
+        assert!(test_control.is_some());
+
+        let imf = get_mf_wrapped(
+            MfReturnOption::Imf,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+        );
+        println!("{}", imf);
+    }
+
+    #[test]
+    fn test_imf_cmf() {
+        let rpc_client =
+            RpcClient::new("https://solana-api.syndica.io/access-token/3IAUwhDwhzjX2Fg5s9HLYfjyoAfSz80hYyOPACaVZhJsqo4HsjIzUr74aN01F8QQ/rpc".to_string());
+
+        let state: State =
+            load_program_accounts::<State>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let cache: Cache =
+            load_program_accounts::<Cache>(&rpc_client, &&zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let margins =
+            load_program_accounts::<Margin>(&rpc_client, &zo_abi::ID).unwrap();
+        let controls =
+            load_program_accounts::<Control>(&rpc_client, &zo_abi::ID).unwrap();
+
+        let mut test_margin: Option<Margin> = None;
+        for (_key, margin) in margins.iter() {
+            if margin.authority.eq(&Pubkey::from_str(
+                "AL8JFS4gjaQx89f9j8wtaNJgV76K8bw1ugvNtgvhgAnb",
+            )
+            .unwrap())
+            {
+                test_margin = Some(margin.clone());
+                break;
+            }
+        }
+
+        assert!(test_margin.is_some());
+
+        let mut test_control: Option<Control> = None;
+        for (key, control) in controls.iter() {
+            if key.eq(&test_margin.unwrap().control) {
+                test_control = Some(control.clone());
+                break;
+            }
+        }
+
+        assert!(test_control.is_some());
+
+        let cmf = get_mf_wrapped(
+            MfReturnOption::Cmf,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+        );
+
+        let imf = get_mf_wrapped(
+            MfReturnOption::Imf,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+        );
+
+        assert!(
+            cmf.unwrapped_sub(safe_mul_i80f48(
+                imf,
+                I80F48::from_str_binary("0.101").unwrap()
+            ))
+            .abs()
+                <= I80F48::from_str_binary("0.0001").unwrap()
+        );
+    }
+
+    #[test]
+    fn test_check_mf_maintenance() {
+        let rpc_client =
+            RpcClient::new("https://solana-api.syndica.io/access-token/3IAUwhDwhzjX2Fg5s9HLYfjyoAfSz80hYyOPACaVZhJsqo4HsjIzUr74aN01F8QQ/rpc".to_string());
+
+        let state: State =
+            load_program_accounts::<State>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let cache: Cache =
+            load_program_accounts::<Cache>(&rpc_client, &&zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let margins =
+            load_program_accounts::<Margin>(&rpc_client, &zo_abi::ID).unwrap();
+        let controls =
+            load_program_accounts::<Control>(&rpc_client, &zo_abi::ID).unwrap();
+
+        let mut test_margin: Option<Margin> = None;
+        for (_key, margin) in margins.iter() {
+            if margin.authority.eq(&Pubkey::from_str(
+                "AL8JFS4gjaQx89f9j8wtaNJgV76K8bw1ugvNtgvhgAnb",
+            )
+            .unwrap())
+            {
+                test_margin = Some(margin.clone());
+                break;
+            }
+        }
+
+        assert!(test_margin.is_some());
+
+        let mut test_control: Option<Control> = None;
+        for (key, control) in controls.iter() {
+            if key.eq(&test_margin.unwrap().control) {
+                test_control = Some(control.clone());
+                break;
+            }
+        }
+
+        assert!(test_control.is_some());
+
+        let is_ok = check_mf(
+            FractionType::Maintenance,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+            I80F48::from_num(0.99f64),
+        );
+        // The liquidator is ok
+        assert!(is_ok);
+    }
+
+    #[test]
+    fn test_check_mf_cancel() {
+        let rpc_client =
+            RpcClient::new("https://solana-api.syndica.io/access-token/3IAUwhDwhzjX2Fg5s9HLYfjyoAfSz80hYyOPACaVZhJsqo4HsjIzUr74aN01F8QQ/rpc".to_string());
+
+        let state: State =
+            load_program_accounts::<State>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let cache: Cache =
+            load_program_accounts::<Cache>(&rpc_client, &&zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let margins =
+            load_program_accounts::<Margin>(&rpc_client, &zo_abi::ID).unwrap();
+        let controls =
+            load_program_accounts::<Control>(&rpc_client, &zo_abi::ID).unwrap();
+
+        let mut test_margin: Option<Margin> = None;
+        for (_key, margin) in margins.iter() {
+            if margin.authority.eq(&Pubkey::from_str(
+                "AL8JFS4gjaQx89f9j8wtaNJgV76K8bw1ugvNtgvhgAnb",
+            )
+            .unwrap())
+            {
+                test_margin = Some(margin.clone());
+                break;
+            }
+        }
+
+        assert!(test_margin.is_some());
+
+        let mut test_control: Option<Control> = None;
+        for (key, control) in controls.iter() {
+            if key.eq(&test_margin.unwrap().control) {
+                test_control = Some(control.clone());
+                break;
+            }
+        }
+
+        assert!(test_control.is_some());
+
+        let is_ok = check_mf(
+            FractionType::Cancel,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+            I80F48::from_num(0.99f64),
+        );
+        assert!(is_ok);
+    }
+
+    #[test]
+    fn test_check_mf_initial() {
+        let rpc_client =
+            RpcClient::new("https://solana-api.syndica.io/access-token/3IAUwhDwhzjX2Fg5s9HLYfjyoAfSz80hYyOPACaVZhJsqo4HsjIzUr74aN01F8QQ/rpc".to_string());
+
+        let state: State =
+            load_program_accounts::<State>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let cache: Cache =
+            load_program_accounts::<Cache>(&rpc_client, &&zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let margins =
+            load_program_accounts::<Margin>(&rpc_client, &zo_abi::ID).unwrap();
+        let controls =
+            load_program_accounts::<Control>(&rpc_client, &zo_abi::ID).unwrap();
+
+        let mut test_margin: Option<Margin> = None;
+        for (_key, margin) in margins.iter() {
+            if margin.authority.eq(&Pubkey::from_str(
+                "AL8JFS4gjaQx89f9j8wtaNJgV76K8bw1ugvNtgvhgAnb",
+            )
+            .unwrap())
+            {
+                test_margin = Some(margin.clone());
+                break;
+            }
+        }
+
+        assert!(test_margin.is_some());
+
+        let mut test_control: Option<Control> = None;
+        for (key, control) in controls.iter() {
+            if key.eq(&test_margin.unwrap().control) {
+                test_control = Some(control.clone());
+                break;
+            }
+        }
+
+        assert!(test_control.is_some());
+
+        let is_ok = check_mf(
+            FractionType::Initial,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+            I80F48::from_num(0.99f64),
+        );
+        // The liquidator is ok
+        assert!(is_ok);
+    }
+
+    #[test]
+    fn test_get_base_weights() {
+        let rpc_client =
+            RpcClient::new("https://solana-api.syndica.io/access-token/3IAUwhDwhzjX2Fg5s9HLYfjyoAfSz80hYyOPACaVZhJsqo4HsjIzUr74aN01F8QQ/rpc".to_string());
+        let state: State =
+            load_program_accounts::<State>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let base = get_base_weight_vector(&state);
+        let mut true_weights = [I80F48::ZERO; MAX_COLLATERALS + MAX_MARKETS];
+        true_weights[0] = I80F48::ONE;
+        true_weights[1] = I80F48::from_num(0.9f64);
+        true_weights[2] = I80F48::from_num(0.9f64);
+        true_weights[3] = I80F48::from_num(0.95f64);
+
+        true_weights[MAX_COLLATERALS] = I80F48::from_num(0.1f64);
+        true_weights[MAX_COLLATERALS + 1] = I80F48::from_num(0.1f64);
+        true_weights[MAX_COLLATERALS + 2] = I80F48::from_num(0.1f64);
+
+        for i in 0..(MAX_COLLATERALS + MAX_MARKETS) {
+            println!("expected {} got {} at {}", true_weights[i], base[i], i);
+            assert!(
+                true_weights[i].unwrapped_sub(base[i]).abs()
+                    < I80F48::from_num(0.00000001f64)
+            );
+        }
+    }
+
+    #[test]
+    fn test_estimate_spot_liq_size() {
+        let rpc_client =
+            RpcClient::new("https://solana-api.syndica.io/access-token/3IAUwhDwhzjX2Fg5s9HLYfjyoAfSz80hYyOPACaVZhJsqo4HsjIzUr74aN01F8QQ/rpc".to_string());
+
+        let state: State =
+            load_program_accounts::<State>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let cache: Cache =
+            load_program_accounts::<Cache>(&rpc_client, &&zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let margins =
+            load_program_accounts::<Margin>(&rpc_client, &zo_abi::ID).unwrap();
+        let controls =
+            load_program_accounts::<Control>(&rpc_client, &zo_abi::ID).unwrap();
+
+        let mut test_margin: Option<Margin> = None;
+        for (_key, margin) in margins.iter() {
+            if margin.authority.eq(&Pubkey::from_str(
+                "AL8JFS4gjaQx89f9j8wtaNJgV76K8bw1ugvNtgvhgAnb",
+            )
+            .unwrap())
+            {
+                test_margin = Some(margin.clone());
+                break;
+            }
+        }
+
+        assert!(test_margin.is_some());
+
+        let mut test_control: Option<Control> = None;
+        for (key, control) in controls.iter() {
+            if key.eq(&test_margin.unwrap().control) {
+                test_control = Some(control.clone());
+                break;
+            }
+        }
+
+        assert!(test_control.is_some());
+
+        let amount = estimate_spot_liquidation_size(
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+            2,
+            0,
+        );
+
+        assert!(amount.is_none());
+
+        let t2 = estimate_spot_liquidation_size(
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+            0,
+            2,
+        );
+
+        assert!(t2.is_some());
+    }
+
+    #[test]
+    fn test_estimate_spot_liq_size2() {
+        let rpc_client =
+            RpcClient::new("https://solana-api.syndica.io/access-token/3IAUwhDwhzjX2Fg5s9HLYfjyoAfSz80hYyOPACaVZhJsqo4HsjIzUr74aN01F8QQ/rpc".to_string());
+
+        let state: State =
+            load_program_accounts::<State>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let cache: Cache =
+            load_program_accounts::<Cache>(&rpc_client, &&zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let margins =
+            load_program_accounts::<Margin>(&rpc_client, &zo_abi::ID).unwrap();
+        let controls =
+            load_program_accounts::<Control>(&rpc_client, &zo_abi::ID).unwrap();
+
+        let mut test_margin: Option<Margin> = None;
+        for (_key, margin) in margins.iter() {
+            if margin.authority.eq(&Pubkey::from_str(
+                "HQ9LbdLZXSBrepenQkwTyjDcsvNzmam1tZNjhtLt8o6D",
+            )
+            .unwrap())
+            {
+                test_margin = Some(margin.clone());
+                break;
+            }
+        }
+
+        assert!(test_margin.is_some());
+
+        let mut test_control: Option<Control> = None;
+        for (key, control) in controls.iter() {
+            if key.eq(&test_margin.unwrap().control) {
+                test_control = Some(control.clone());
+                break;
+            }
+        }
+
+        assert!(test_control.is_some());
+
+        let amount = estimate_spot_liquidation_size(
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+            1,
+            0,
+        );
+
+        assert_eq!(amount.unwrap(), I80F48::from_num(382370000.0f64));
+
+        let t2 = estimate_spot_liquidation_size(
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+            0,
+            2,
+        );
+
+        assert!(t2.is_some());
+    }
+
+    #[test]
+    fn test_check_mf_maintenance_main() {
+        let rpc_client = RpcClient::new(
+            "https://solana-api.syndica.io/access-token/3IAUwhDwhzjX2Fg5s9HLYfjyoAfSz80hYyOPACaVZhJsqo4HsjIzUr74aN01F8QQ/rpc".to_string(),
+        );
+
+        let state: State =
+            load_program_accounts::<State>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let cache: Cache =
+            load_program_accounts::<Cache>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+        let margins =
+            load_program_accounts::<Margin>(&rpc_client, &zo_abi::ID).unwrap();
+        let controls =
+            load_program_accounts::<Control>(&rpc_client, &zo_abi::ID).unwrap();
+
+        let mut test_margin: Option<Margin> = None;
+        for (_key, margin) in margins.iter() {
+            if margin.authority.eq(&Pubkey::from_str(
+                "zuCM1fMKnuKrpoy1zB9cQiFrkpiZXmrScN8e1coVEdF",
+            )
+            .unwrap())
+            {
+                test_margin = Some(margin.clone());
+                break;
+            }
+        }
+
+        assert!(test_margin.is_some());
+
+        let mut test_control: Option<Control> = None;
+        for (key, control) in controls.iter() {
+            if key.eq(&test_margin.unwrap().control) {
+                test_control = Some(control.clone());
+                break;
+            }
+        }
+
+        assert!(test_control.is_some());
+
+        let mf = get_mf_wrapped(
+            MfReturnOption::Mf,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+        );
+
+        let mmf = get_mf_wrapped(
+            MfReturnOption::Mmf,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+        );
+
+        println!("{} {}", mf, mmf);
+        let is_ok = check_mf(
+            FractionType::Maintenance,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+            I80F48::from_num(0.99f64),
+        );
+        // The liquidator is ok
+        assert!(is_ok);
+    }
+
+    #[test]
+    fn test_check_mf_maintenance_dev() {
+        let rpc_client = RpcClient::new(
+            "https://psytrbhymqlkfrhudd.dev.genesysgo.net:8899/".to_string(),
+        );
+
+        let state: State =
+            load_program_accounts::<State>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+
+        let cache: Cache =
+            load_program_accounts::<Cache>(&rpc_client, &zo_abi::ID).unwrap()
+                [0]
+            .1;
+        let margins =
+            load_program_accounts::<Margin>(&rpc_client, &zo_abi::ID).unwrap();
+        let controls =
+            load_program_accounts::<Control>(&rpc_client, &zo_abi::ID).unwrap();
+
+        let mut test_margin: Option<Margin> = None;
+        for (_key, margin) in margins.iter() {
+            if margin.authority.eq(&Pubkey::from_str(
+                "76FnoFsGx5axcYoB4Jzxyds2gGJmw7ddbVC7cL4n9fpa",
+            )
+            .unwrap())
+            {
+                test_margin = Some(margin.clone());
+                break;
+            }
+        }
+
+        assert!(test_margin.is_some());
+
+        let mut test_control: Option<Control> = None;
+        for (key, control) in controls.iter() {
+            if key.eq(&test_margin.unwrap().control) {
+                test_control = Some(control.clone());
+                break;
+            }
+        }
+
+        assert!(test_control.is_some());
+
+        let mf = get_mf_wrapped(
+            MfReturnOption::Mf,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+        );
+
+        let mmf = get_mf_wrapped(
+            MfReturnOption::Mmf,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+        );
+
+        println!("{} {}", mf, mmf);
+        let is_ok = check_mf(
+            FractionType::Maintenance,
+            &test_margin.unwrap(),
+            &test_control.unwrap(),
+            &state,
+            &cache,
+            I80F48::from_num(0.99f64),
+        );
+        // The liquidator is ok
+        assert!(is_ok);
+    }
 }

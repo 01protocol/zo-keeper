@@ -16,12 +16,13 @@ use serum_dex::state::{
 };
 use solana_sdk::pubkey::Pubkey;
 use std::{
-    cell::RefCell,
     collections::HashMap,
     ops::Deref,
     sync::{Arc, Mutex, MutexGuard},
 };
-use tracing::{error, error_span, info, warn};
+use fixed::types::I80F48;
+
+use tracing::{error, error_span, info};
 use zo_abi::{
     dex::ZoDexMarket as MarketState, Cache, Control, FractionType, Margin,
     State, MAX_MARKETS,
@@ -141,7 +142,7 @@ impl AccountTable {
             )
             .unwrap();
             let market = market_state.deref();
-
+            
             serum_markets.insert(i, *market);
 
             let vault_signer = Pubkey::create_program_address(
@@ -350,7 +351,7 @@ impl DbWrapper {
                         Ok(()) => {
                             span_clone.in_scope(|| {
                                 info!(
-                                    "liquidated account for: {}",
+                                    "Liquidated {}",
                                     margin.authority
                                 );
                             });
@@ -358,7 +359,7 @@ impl DbWrapper {
                         Err(e) => {
                             span_clone.in_scope(|| {
                                 error!(
-                                    "Error liquidating account {} : {:?}",
+                                    "{} not liquidated: {:?}",
                                     margin.authority, e
                                 )
                             });
@@ -368,6 +369,12 @@ impl DbWrapper {
 
                 handles.push(handle);
             } else if cancel_orders {
+                span.in_scope(|| {
+                    info!(
+                        "Found cancellable account: {}",
+                        margin.authority.to_string()
+                    )
+                });
                 let dex_program = *dex_program;
                 let payer_pubkey = db.payer_key();
                 let control_pair = db.get_control_from_margin(&margin).unwrap();
@@ -401,7 +408,7 @@ impl DbWrapper {
                         Err(e) => {
                             span_clone.in_scope(|| {
                                 error!(
-                                    "Error liquidating account {} : {:?}",
+                                    "Error cancelling account {} : {:?}",
                                     margin.authority, e
                                 )
                             });
@@ -422,9 +429,9 @@ impl DbWrapper {
         cache: &Cache,
     ) -> Result<(bool, bool), ErrorCode> {
         // Do the math on the margin account.
-        let span = error_span!("is_liquidatable");
-        let col = get_total_collateral(margin, cache, state);
-        
+        // let span = error_span!("is_liquidatable");
+        // let col = get_total_collateral(margin, cache, state);
+        // println!("{}", margin.authority);
         let control = match table.get_control_from_margin(margin) {
             Some((_key, control)) => control,
             None => {                
@@ -435,60 +442,27 @@ impl DbWrapper {
                 return Ok((false, false));
             }
         };
-
-        // Have to rewrite this func to use current util instead of stored cache variables.
-        // Also for multipliers.
-        let cancel_result = check_fraction_requirement(
-            FractionType::Cancel,
-            col.to_num::<i64>(),
-            table.state.total_markets as usize,
-            table.state.total_collaterals as usize,
-            &control.open_orders_agg,
-            &table.state.perp_markets,
-            &table.state.collaterals,
-            &{ margin.collateral },
-            &RefCell::new(table.cache).borrow(),
-        );
-
-        let result = check_fraction_requirement(
-            FractionType::Maintenance,
-            col.to_num::<i64>(),
-            table.state.total_markets as usize,
-            table.state.total_collaterals as usize,
-            &control.open_orders_agg,
-            &table.state.perp_markets,
-            &table.state.collaterals,
-            &{ margin.collateral },
-            &RefCell::new(table.cache).borrow(),
-        );
-
         let has_oo = has_open_orders(cache, control)?;
-        match (cancel_result, result) {
-            (Ok(is_not_cancel), Ok(is_not_liq)) => {
-                Ok((!is_not_cancel, !is_not_liq && !has_oo))
-            }
-            (Ok(is_not_cancel), Err(e)) => {
-                span.in_scope(|| {
-                    error!("Error checking maintenance fraction: {:?}", e)
-                });
-                Ok((!is_not_cancel, false))
-            }
-            (Err(e), Ok(is_not_liq)) => {
-                span.in_scope(|| {
-                    error!("Error checking cancel fraction: {:?}", e)
-                });
-                Ok((false, !is_not_liq && !has_oo))
-            }
-            (Err(e1), Err(e2)) => {
-                span.in_scope(|| {
-                    error!("Error checking cancel fraction: {:?}", e1)
-                });
-                span.in_scope(|| {
-                    error!("Error checking maintenance fraction: {:?}", e2)
-                });
-                Err(ErrorCode::LiquidationFailure)
-            }
-        }
+
+        let is_above_cancel = check_mf(
+            FractionType::Cancel,
+            margin,
+            control,
+            state,
+            cache,
+            I80F48::from_num(0.9999f64)
+        );
+
+        let is_above_maintenance = check_mf(
+            FractionType::Maintenance,
+            margin,
+            control,
+            state,
+            cache,
+            I80F48::from_num(0.9999f64)
+        );
+
+        Ok((!is_above_cancel && has_oo, !is_above_maintenance))
     }
 
     pub fn get_clone(&self) -> Db {
