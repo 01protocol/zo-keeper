@@ -52,9 +52,9 @@ pub async fn liquidate_loop(st: &'static crate::AppState, database: DbWrapper) {
         {
             Ok(n) => {
                 debug!(
-                    "Checked {} accounts in {} μs",
+                    "Checked {} accounts in {} ms",
                     n,
-                    loop_start.elapsed().as_micros()
+                    loop_start.elapsed().as_millis()
                 );
             }
             Err(e) => {
@@ -106,8 +106,9 @@ pub fn liquidate(
         margin,
         &RefCell::new(*state).borrow(),
         &RefCell::new(*cache).borrow(),
-        true,
+        false,
     );
+
     let colls = match colls {
         Ok(colls) => colls,
         Err(e) => {
@@ -138,7 +139,7 @@ pub fn liquidate(
     if quote_info.is_none() {
         quote_info = Some((0, &I80F48::ZERO));
     }
-    
+
     // Sort the positions
     let positions: Vec<I80F48> = control
         .open_orders_agg
@@ -212,7 +213,7 @@ pub fn liquidate(
         )?;
     } else if is_spot_bankrupt && !has_positions {
         let oo_index_result = largest_open_order(cache, control)?;
-        
+
         if let Some(_order_index) = oo_index_result {
             cancel(
                 program,
@@ -259,8 +260,10 @@ pub fn liquidate(
             payer_pubkey,
             payer_margin,
             payer_margin_key,
+            payer_control,
             margin,
             margin_key,
+            control,
             cache,
             cache_key,
             state,
@@ -268,7 +271,6 @@ pub fn liquidate(
             state_signer,
             col_index,
             quote_idx,
-            min_col.abs().to_num(),
             serum_markets,
             serum_dex_program,
             serum_vault_signers,
@@ -390,7 +392,7 @@ fn cancel_orders(
                     market_asks: *market_asks,
                     dex_program: *dex_program,
                 })
-                .args(instruction::ForceCancelAllPerpOrders { limit: 32 })
+                .args(instruction::ForceCancelAllPerpOrders { limit: 300 })
                 .options(CommitmentConfig::confirmed())
         },
         5,
@@ -403,10 +405,7 @@ fn cancel_orders(
             });
             Ok(())
         }
-        Err(e) => {
-            span.in_scope(|| error!("Failed to cancel perp position: {:?}", e));
-            Err(ErrorCode::CancelFailure)
-        }
+        Err(_e) => Err(ErrorCode::CancelFailure),
     }
 }
 
@@ -457,12 +456,12 @@ fn liquidate_perp_position(
             dex_program: *dex_program,
         }
         .to_account_metas(None),
-        data: instruction::ForceCancelAllPerpOrders { limit: 32 }.data(),
+        data: instruction::ForceCancelAllPerpOrders { limit: 300 }.data(),
         program_id: program.id(),
     };
 
     let mut asset_transfer_lots =
-        get_total_collateral(liqor_margin, cache, state)
+        get_total_account_value(liqor_margin, liqor_control, state, cache)
             .checked_div(cache.marks[index].price.into())
             .unwrap()
             .to_num::<i64>()
@@ -470,6 +469,13 @@ fn liquidate_perp_position(
             .unwrap()
             .safe_mul(5i64) // 5x leverage
             .unwrap();
+
+    debug!(
+        "{} | {} {}",
+        liqee_margin.authority,
+        asset_transfer_lots,
+        String::from(state.perp_markets[index].symbol)
+    );
 
     let mut liq_ix = Instruction {
         accounts: ix_accounts::LiquidatePerpPosition {
@@ -558,9 +564,6 @@ fn liquidate_perp_position(
                     .data();
                 }
                 _ => {
-                    span.in_scope(|| {
-                        error!("Failed to liquidate perp position: {:?}", e)
-                    });
                     return Err(ErrorCode::LiquidationFailure);
                 }
             },
@@ -575,8 +578,10 @@ fn liquidate_spot_position(
     payer_pubkey: &Pubkey,
     liqor_margin: &Margin,
     liqor_margin_key: &Pubkey,
+    liqor_control: &Control,
     liqee_margin: &Margin,
     liqee_margin_key: &Pubkey,
+    liqee_control: &Control,
     cache: &Cache,
     cache_key: &Pubkey,
     state: &State,
@@ -584,7 +589,6 @@ fn liquidate_spot_position(
     state_signer: &Pubkey,
     asset_index: usize,
     quote_index: usize,
-    debt_amount: u64,
     serum_markets: HashMap<usize, SerumMarketState>,
     serum_dex_program: &Pubkey,
     serum_vault_signers: HashMap<usize, Pubkey>,
@@ -594,19 +598,47 @@ fn liquidate_spot_position(
     let asset_collateral_info = state.collaterals[asset_index];
     let quote_collateral_info = state.collaterals[quote_index];
 
-    let spot_price: I80F48 =
+    let quote_price: I80F48 =
+        get_oracle(cache, &quote_collateral_info.oracle_symbol)
+            .unwrap()
+            .price
+            .into();
+
+    let asset_price: I80F48 =
         get_oracle(cache, &asset_collateral_info.oracle_symbol)
             .unwrap()
             .price
             .into();
 
-    let mut asset_transfer_amount =
-        -get_total_collateral(liqor_margin, cache, state)
-            .checked_div(spot_price)
-            .unwrap()
-            .to_num::<i64>()
-            .safe_mul(5i64) // 5x leverage
-            .unwrap();
+    let asset_transfer_lots =
+        get_total_account_value(liqor_margin, liqor_control, state, cache)
+            * I80F48::from_num(5u8);
+
+    let size_estimate = estimate_spot_liquidation_size(
+        liqee_margin,
+        liqee_control,
+        state,
+        cache,
+        asset_index,
+        quote_index,
+    );
+
+    let fudge = I80F48::from_str_binary("1.1").unwrap();
+    let mut usdc_amount = match size_estimate {
+        Some(size_estimate) => {
+            let amount = size_estimate * fudge;
+            amount.min(asset_transfer_lots)
+        }
+        None => I80F48::ZERO,
+    };
+
+    debug!(
+        "{}: {}sUSD s{} -> s{}",
+        liqee_margin.authority,
+        usdc_amount / quote_price,
+        String::from(quote_collateral_info.oracle_symbol),
+        String::from(asset_collateral_info.oracle_symbol),
+    );
 
     let mut liq_ix = Instruction {
         accounts: ix_accounts::LiquidateSpotPosition {
@@ -622,36 +654,48 @@ fn liquidate_spot_position(
         }
         .to_account_metas(None),
         data: instruction::LiquidateSpotPosition {
-            asset_transfer_amount,
+            asset_transfer_amount: -usdc_amount
+                .unwrapped_div(asset_price)
+                .to_num::<i64>(),
         }
         .data(),
         program_id: program.id(),
     };
 
     let mut swap_ixs: Vec<Instruction> = Vec::new();
-    
+
     if let (Some(serum_market), Some(serum_vault_signer)) = (
         serum_markets.get(&quote_index),
         serum_vault_signers.get(&quote_index),
     ) {
         // Rebalance the quote (which is what was received)
-        let remove_quote = swap::make_swap_ix(
-            program,
-            payer_pubkey,
-            state,
-            state_key,
-            state_signer,
-            liqor_margin_key,
-            &liqor_margin.control,
-            serum_market,
-            serum_dex_program,
-            serum_vault_signer,
-            999_999_999_999_999u64,
-            false,
-            quote_index,
-        )?;
+        // Make sure that it's not a zero-transfer
+        if usdc_amount.abs() / quote_price
+            > I80F48::from_num(2 * serum_market.coin_lot_size)
+        {
+            debug!(
+                "Rebalancing {} s{}",
+                usdc_amount,
+                String::from(asset_collateral_info.oracle_symbol)
+            );
+            let remove_quote = swap::make_swap_ix(
+                program,
+                payer_pubkey,
+                state,
+                state_key,
+                state_signer,
+                liqor_margin_key,
+                &liqor_margin.control,
+                serum_market,
+                serum_dex_program,
+                serum_vault_signer,
+                999_999_999_999_999u64,
+                false,
+                quote_index,
+            )?;
 
-        swap_ixs.push(remove_quote);
+            swap_ixs.push(remove_quote);
+        }
     }
 
     if let (Some(serum_market), Some(serum_vault_signer)) = (
@@ -659,55 +703,51 @@ fn liquidate_spot_position(
         serum_vault_signers.get(&asset_index),
     ) {
         // Rebalance the asset (which is what was given)
-        /*
-        let size_estimate = estimate_spot_liquidation_size(
-            liqor_margin,
-            liqor_control,
-            state,
-            cache,
-            asset_index,
-            quote_index,
-            Some(1.5f64),
-        )?;
-        println!(
-            "Liqing {}'s {}. Size estimate: {}",
-            liqee_margin.authority, asset_index, size_estimate
-        );
-        */
-        let remove_debt = swap::make_swap_ix(  // amount is what is what is being sold always usdc here
-            program,
-            payer_pubkey,
-            state,
-            state_key,
-            state_signer,
-            liqor_margin_key,
-            &liqor_margin.control,
-            serum_market,
-            serum_dex_program,
-            serum_vault_signer,
-            debt_amount, // TODO: Estimate the amount to repay, or perform fetches after. 
-            true,
-            asset_index,
-        )?;
+        if usdc_amount.abs() / asset_price
+            >= I80F48::from_num(2 * serum_market.coin_lot_size)
+                * (I80F48::ONE / (fudge - I80F48::ONE) + I80F48::ONE)
+        {
+            debug!(
+                "Rebalancing {} s{}",
+                usdc_amount / asset_price,
+                String::from(asset_collateral_info.oracle_symbol)
+            );
+            let remove_debt = swap::make_swap_ix(
+                // amount is what is what is being sold always usdc here
+                program,
+                payer_pubkey,
+                state,
+                state_key,
+                state_signer,
+                liqor_margin_key,
+                &liqor_margin.control,
+                serum_market,
+                serum_dex_program,
+                serum_vault_signer,
+                usdc_amount.ceil().to_num(),
+                true,
+                asset_index,
+            )?;
 
-        let remove_excess = swap::make_swap_ix(
-            program,
-            payer_pubkey,
-            state,
-            state_key,
-            state_signer,
-            liqor_margin_key,
-            &liqor_margin.control,
-            serum_market,
-            serum_dex_program,
-            serum_vault_signer,
-            999_999_999_999_999u64,
-            false,
-            asset_index,
-        )?;
+            let remove_excess = swap::make_swap_ix(
+                program,
+                payer_pubkey,
+                state,
+                state_key,
+                state_signer,
+                liqor_margin_key,
+                &liqor_margin.control,
+                serum_market,
+                serum_dex_program,
+                serum_vault_signer,
+                999_999_999_999_999u64,
+                false,
+                asset_index,
+            )?;
 
-        swap_ixs.push(remove_debt);
-        swap_ixs.push(remove_excess);
+            swap_ixs.push(remove_debt);
+            swap_ixs.push(remove_excess);
+        }
     }
 
     let reduction_max = 5;
@@ -739,16 +779,14 @@ fn liquidate_spot_position(
             }
             Err(e) => match e {
                 ErrorCode::LiquidationOverExposure => {
-                    asset_transfer_amount /= 2;
+                    usdc_amount /= 2;
                     liq_ix.data = instruction::LiquidateSpotPosition {
-                        asset_transfer_amount,
+                        asset_transfer_amount: -(usdc_amount / asset_price)
+                            .to_num::<i64>(),
                     }
                     .data();
                 }
                 _ => {
-                    span.in_scope(|| {
-                        error!("Failed to liquidate spot position: {:?}", e)
-                    });
                     return Err(ErrorCode::LiquidationFailure);
                 }
             },
@@ -793,7 +831,7 @@ fn settle_bankruptcy(
                 (serum_markets.get(&i), serum_vault_signers.get(&i))
             {
                 let amount: u64 = liqee_colls[i].abs().to_num();
-                if amount == 0 {
+                if amount == 0 || amount >= 2 * serum_market.coin_lot_size {
                     None
                 } else {
                     Some(swap::make_swap_ix(
