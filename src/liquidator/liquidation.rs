@@ -31,7 +31,7 @@ use crate::liquidator::{
 
 #[tracing::instrument(skip_all, level = "error")]
 pub async fn liquidate_loop(st: &'static crate::AppState, database: DbWrapper) {
-    info!("starting...");
+    info!("starting liquidator v0.1.0...");
 
     let mut last_refresh = std::time::Instant::now();
     let mut interval =
@@ -128,9 +128,9 @@ pub fn liquidate(
 
     // Find the highest weighted asset that is positive.
     let mut quote_info: Option<(usize, &I80F48)> = None;
-    let mut current_weight = 0;
+    let mut current_weight = 1000;
     for (i, coll) in collateral_tuple {
-        if coll.is_positive() && state.collaterals[i].weight > current_weight {
+        if coll > &I80F48::from_num(DUST_THRESHOLD) && state.collaterals[i].weight < current_weight {
             current_weight = state.collaterals[i].weight;
             quote_info = Some((i, &coll));
         }
