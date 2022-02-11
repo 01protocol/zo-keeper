@@ -14,7 +14,7 @@ pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
     let cache_oracle_tasks = st
         .iter_oracles()
         .collect::<Vec<_>>()
-        .chunks(5)
+        .chunks(16)
         .map(|x| {
             let (symbols, accounts): (Vec<String>, Vec<AccountMeta>) = x
                 .iter()
@@ -36,7 +36,7 @@ pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
         .collect::<Vec<_>>();
 
     let cache_interest_tasks = (0..st.zo_state.total_collaterals as u8)
-        .step_by(4)
+        .step_by(8)
         .map(|i| {
             let start = i;
             let end = min(i + 4, st.zo_state.total_collaterals as u8);
