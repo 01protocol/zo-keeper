@@ -450,7 +450,7 @@ impl DbWrapper {
             control,
             state,
             cache,
-            I80F48::from_num(0.9999f64)
+            I80F48::from_num(0.99995f64)
         );
 
         let is_above_maintenance = check_mf(
@@ -459,7 +459,7 @@ impl DbWrapper {
             control,
             state,
             cache,
-            I80F48::from_num(0.9999f64)
+            I80F48::from_num(0.99995f64)
         );
 
         Ok((!is_above_cancel && has_oo, !is_above_maintenance))
