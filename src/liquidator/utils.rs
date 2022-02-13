@@ -213,7 +213,7 @@ pub fn retry_send<'a>(
                                             ErrorCode::UnrecoverableTransactionError,
                                         );
                                     } else if code == 6052 {
-                                        warn!("Account has unliquidated spot, possibly already liquidated.");
+                                        warn!("Account has unliquidated spot, possibly already liquidated. {:?}", e);
                                         return Err(
                                             ErrorCode::UnrecoverableTransactionError,
                                         );

@@ -185,7 +185,7 @@ pub fn liquidate(
     );
     let market_info = market_infos[position_index];
 
-    let is_spot_bankrupt = colls.iter().all(|col| col < &DUST_THRESHOLD);
+    let is_spot_bankrupt = colls.iter().all(|col| col < &DUST_THRESHOLD) && colls.iter().sum::<I80F48>().is_negative();
 
     if has_positions
         && (min_col.abs() <= max_position_notional.abs() || is_spot_bankrupt)
@@ -631,6 +631,11 @@ fn liquidate_spot_position(
         }
         None => I80F48::ZERO,
     };
+
+    if usdc_amount <= DUST_THRESHOLD {
+        info!("Not enough collateral to liquidate");
+        return Ok(())
+    }
 
     debug!(
         "{}: {}sUSD s{} -> s{}",
