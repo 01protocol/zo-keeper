@@ -130,16 +130,12 @@ pub fn liquidate(
     let mut quote_info: Option<(usize, &I80F48)> = None;
     let mut current_weight = 1000;
     for (i, coll) in collateral_tuple {
-        if coll > &I80F48::from_num(DUST_THRESHOLD) && state.collaterals[i].weight < current_weight {
+        if coll > &I80F48::from_num(DUST_THRESHOLD) && state.collaterals[i].weight <= current_weight {
             current_weight = state.collaterals[i].weight;
             quote_info = Some((i, &coll));
         }
     }
-
-    if quote_info.is_none() {
-        quote_info = Some((0, &I80F48::ZERO));
-    }
-
+    
     // Sort the positions
     let positions: Vec<I80F48> = control
         .open_orders_agg
@@ -247,7 +243,7 @@ pub fn liquidate(
                 serum_vault_signers,
             )?;
         };
-    } else if *min_col < 0u64 {
+    } else if *min_col < 0u64 && quote_info.is_some() {
         // Close a spot position
         let quote_idx = if let Some((q_idx, _q_coll)) = quote_info {
             q_idx
@@ -631,11 +627,6 @@ fn liquidate_spot_position(
         }
         None => I80F48::ZERO,
     };
-
-    if usdc_amount <= DUST_THRESHOLD {
-        info!("Not enough collateral to liquidate");
-        return Ok(())
-    }
 
     debug!(
         "{}: {}sUSD s{} -> s{}",
