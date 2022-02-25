@@ -1,4 +1,7 @@
-use anchor_client::{solana_sdk::signer::keypair, Cluster};
+use anchor_client::{
+    solana_sdk::{commitment_config::CommitmentConfig, signer::keypair},
+    Cluster,
+};
 use clap::{AppSettings, Parser, Subcommand};
 use std::{env, time::Duration};
 use zo_keeper as lib;
@@ -28,7 +31,7 @@ enum Command {
     /// Run caching and update funding instructions
     Crank {
         /// Interval for cache oracle, in seconds
-        #[clap(long, default_value = "2", parse(try_from_str = parse_seconds))]
+        #[clap(long, default_value = "2.5", parse(try_from_str = parse_seconds))]
         cache_oracle_interval: Duration,
 
         /// Interval for cache interest, in seconds
@@ -103,9 +106,13 @@ fn main() -> Result<(), lib::Error> {
     };
 
     let cluster = Cluster::Custom(rpc_url, ws_url);
+    let commitment = match command {
+        Command::Crank { .. } => CommitmentConfig::processed(),
+        _ => CommitmentConfig::confirmed(),
+    };
 
     let app_state: &'static _ =
-        Box::leak(Box::new(lib::AppState::new(cluster, payer)));
+        Box::leak(Box::new(lib::AppState::new(cluster, commitment, payer)));
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

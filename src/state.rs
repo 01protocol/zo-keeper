@@ -20,11 +20,15 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(cluster: Cluster, payer: Keypair) -> Self {
+    pub fn new(
+        cluster: Cluster,
+        commitment: CommitmentConfig,
+        payer: Keypair,
+    ) -> Self {
         let program = Client::new_with_options(
             cluster.clone(),
             std::rc::Rc::new(Keypair::from_bytes(&payer.to_bytes()).unwrap()),
-            CommitmentConfig::confirmed(),
+            commitment.clone(),
         )
         .program(zo_abi::ID);
 
@@ -33,7 +37,10 @@ impl AppState {
         let zo_state: zo_abi::State = program.account(zo_state_pubkey).unwrap();
         let zo_cache: zo_abi::Cache = program.account(zo_state.cache).unwrap();
         let (zo_state_signer_pubkey, state_signer_nonce) =
-            Pubkey::find_program_address(&[zo_state_pubkey.as_ref()], &zo_abi::ID);
+            Pubkey::find_program_address(
+                &[zo_state_pubkey.as_ref()],
+                &zo_abi::ID,
+            );
 
         if state_signer_nonce != zo_state.signer_nonce {
             panic!("Invalid state signer nonce");

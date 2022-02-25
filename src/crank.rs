@@ -76,11 +76,7 @@ where
 {
     loop {
         interval.tick().await;
-        if let Err(e) = tokio::task::spawn_blocking(f.clone()).await {
-            if e.is_panic() {
-                warn!("task panicked: {0}: {0:?}", e);
-            }
-        }
+        tokio::task::spawn_blocking(f.clone());
     }
 }
 
