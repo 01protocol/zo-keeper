@@ -3,11 +3,7 @@ use fixed::types::I80F48;
 use std::cell::Ref;
 
 use zo_abi::{
-<<<<<<< HEAD
-    Cache, Control, FractionType, Margin, State, MAX_COLLATERALS, MAX_MARKETS,
-=======
     Cache, Control, FractionType, PerpType, Margin, State, MAX_COLLATERALS, MAX_MARKETS,
->>>>>>> 90512b580ec47484f7acf3315bbf284955dc117a
     SPOT_INITIAL_MARGIN_REQ, SPOT_MAINT_MARGIN_REQ,
 };
 
