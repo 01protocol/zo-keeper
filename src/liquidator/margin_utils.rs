@@ -3,7 +3,11 @@ use fixed::types::I80F48;
 use std::cell::Ref;
 
 use zo_abi::{
+<<<<<<< HEAD
     Cache, Control, FractionType, Margin, State, MAX_COLLATERALS, MAX_MARKETS,
+=======
+    Cache, Control, FractionType, PerpType, Margin, State, MAX_COLLATERALS, MAX_MARKETS,
+>>>>>>> 90512b580ec47484f7acf3315bbf284955dc117a
     SPOT_INITIAL_MARGIN_REQ, SPOT_MAINT_MARGIN_REQ,
 };
 
@@ -172,11 +176,19 @@ pub fn get_price_vector(
 
     for i in 0..state.total_markets {
         let i = i as usize;
-        price[i + MAX_COLLATERALS] =
-            get_oracle(cache, &state.perp_markets[i].oracle_symbol)
-                .unwrap()
-                .price
-                .into();
+        match state.perp_markets[i].perp_type {
+            PerpType::Future => {
+                price[i + MAX_COLLATERALS] =
+                get_oracle(cache, &state.perp_markets[i].oracle_symbol)
+                    .unwrap()
+                    .price
+                    .into();
+            }
+            PerpType::Square => {
+                price[i + MAX_COLLATERALS] = cache.marks[i].price.into();
+            }
+            _ => { println!("Not implemented bruh"); }
+        }
     }
 
     price
