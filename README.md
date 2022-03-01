@@ -54,3 +54,14 @@ subcommands, which can also be passed as environment variables.
 Additionally, the project uses `dotenv` as well, so it's
 recommended to copy `.env.example` to `.env` and configure it
 appropriately, to avoid having to pass arguments every time.
+
+### Liquidator
+
+The liquidator requires the `SOLANA_PAYER_KEY` env variable. It also requires rpc node arguments in teh following format when running.
+
+```
+$ cargo build --release
+$ ./target/release/zo-keeper \
+     --rpc-url "https://api.mainnet-beta.solana.com:8899" --ws-url "wss://api.mainnet-beta.solana.com:8900" \
+     liquidator --worker-count 1 --worker-index 0 
+```
