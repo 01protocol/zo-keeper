@@ -1465,18 +1465,9 @@ dependencies = [
 
 [[package]]
 name = "fixed"
-version = "0.5.7"
+version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f32ca1abdbb21d63a3e02a658a9e3001b172f13c8b46724299e21190c5ee5041"
-dependencies = [
- "typenum",
-]
-
-[[package]]
-name = "fixed"
-version = "1.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d38004fb072c44da88a322343c7c784bd1ff6f2e3f5b332050de60c5eea3e0e"
+checksum = "80a9a8cb2e34880a498f09367089339bda5e12d6f871640f947850f7113058c0"
 dependencies = [
  "az",
  "bytemuck",
@@ -6699,7 +6690,7 @@ version = "0.4.0-beta.2"
 dependencies = [
  "anchor-lang",
  "bytemuck",
- "fixed 0.5.7",
+ "fixed",
  "solana-program",
 ]
 
@@ -6715,7 +6706,7 @@ dependencies = [
  "chrono",
  "clap 3.1.3",
  "dotenv",
- "fixed 1.13.0",
+ "fixed",
  "futures 0.3.21",
  "jsonrpc-core",
  "jsonrpc-core-client",
