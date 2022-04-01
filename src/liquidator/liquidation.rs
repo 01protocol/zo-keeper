@@ -827,7 +827,7 @@ fn settle_bankruptcy(
                 (serum_markets.get(&i), serum_vault_signers.get(&i))
             {
                 let amount: u64 = liqee_colls[i].abs().to_num();
-                if amount == 0 || amount >= 2 * serum_market.coin_lot_size {
+                if amount == 0 || amount <= 2 * serum_market.coin_lot_size {
                     None
                 } else {
                     Some(swap::make_swap_ix(
