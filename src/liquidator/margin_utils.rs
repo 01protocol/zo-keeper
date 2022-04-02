@@ -3,8 +3,8 @@ use fixed::types::I80F48;
 use std::cell::Ref;
 
 use zo_abi::{
-    Cache, Control, FractionType, PerpType, Margin, State, MAX_COLLATERALS, MAX_MARKETS,
-    SPOT_INITIAL_MARGIN_REQ, SPOT_MAINT_MARGIN_REQ,
+    Cache, Control, FractionType, Margin, PerpType, State, MAX_COLLATERALS,
+    MAX_MARKETS, SPOT_INITIAL_MARGIN_REQ, SPOT_MAINT_MARGIN_REQ,
 };
 
 use crate::liquidator::{error::ErrorCode, math::*, utils::*};
@@ -175,15 +175,17 @@ pub fn get_price_vector(
         match state.perp_markets[i].perp_type {
             PerpType::Future => {
                 price[i + MAX_COLLATERALS] =
-                get_oracle(cache, &state.perp_markets[i].oracle_symbol)
-                    .unwrap()
-                    .price
-                    .into();
+                    get_oracle(cache, &state.perp_markets[i].oracle_symbol)
+                        .unwrap()
+                        .price
+                        .into();
             }
             PerpType::Square => {
                 price[i + MAX_COLLATERALS] = cache.marks[i].price.into();
             }
-            _ => { println!("Not implemented bruh"); }
+            _ => {
+                println!("Not implemented bruh");
+            }
         }
     }
 
@@ -216,16 +218,23 @@ pub fn get_pnl_vectors(
                 )); // In smol asset
 
         // Unrealized pnl calcs
-        let price = get_oracle(cache, &state.perp_markets[i].oracle_symbol)
-            .unwrap()
-            .price
-            .into();
-        
-        let unrealized_pnl = safe_mul_i80f48(
-            I80F48::from_num(info.pos_size),
-            price,
-        )
-        .unwrapped_add(I80F48::from_num(info.native_pc_total));
+        let price = match state.perp_markets[i].perp_type {
+            PerpType::Future => {
+                get_oracle(cache, &state.perp_markets[i].oracle_symbol)
+                    .unwrap()
+                    .price
+                    .into()
+            }
+            PerpType::Square => cache.marks[i].price.into(),
+            _ => {
+                println!("Not implemented bruh");
+                I80F48::ZERO
+            }
+        };
+
+        let unrealized_pnl =
+            safe_mul_i80f48(I80F48::from_num(info.pos_size), price)
+                .unwrapped_add(I80F48::from_num(info.native_pc_total));
 
         unrealized_pnls[i + MAX_COLLATERALS] = unrealized_pnl;
 
@@ -993,7 +1002,7 @@ mod tests {
         let mut test_margin: Option<Margin> = None;
         for (_key, margin) in margins.iter() {
             if margin.authority.eq(&Pubkey::from_str(
-                "AL8JFS4gjaQx89f9j8wtaNJgV76K8bw1ugvNtgvhgAnb",
+                "53qyL9jgfsABQAsn3ZUSstd5fQv2Kqf1KeAMVgscmDBz",
             )
             .unwrap())
             {
@@ -1049,7 +1058,7 @@ mod tests {
         let mut test_margin: Option<Margin> = None;
         for (_key, margin) in margins.iter() {
             if margin.authority.eq(&Pubkey::from_str(
-                "AL8JFS4gjaQx89f9j8wtaNJgV76K8bw1ugvNtgvhgAnb",
+                "53qyL9jgfsABQAsn3ZUSstd5fQv2Kqf1KeAMVgscmDBz",
             )
             .unwrap())
             {
@@ -1104,7 +1113,7 @@ mod tests {
         let mut test_margin: Option<Margin> = None;
         for (_key, margin) in margins.iter() {
             if margin.authority.eq(&Pubkey::from_str(
-                "AL8JFS4gjaQx89f9j8wtaNJgV76K8bw1ugvNtgvhgAnb",
+                "53qyL9jgfsABQAsn3ZUSstd5fQv2Kqf1KeAMVgscmDBz",
             )
             .unwrap())
             {
@@ -1189,7 +1198,7 @@ mod tests {
         let mut test_margin: Option<Margin> = None;
         for (_key, margin) in margins.iter() {
             if margin.authority.eq(&Pubkey::from_str(
-                "AL8JFS4gjaQx89f9j8wtaNJgV76K8bw1ugvNtgvhgAnb",
+                "53qyL9jgfsABQAsn3ZUSstd5fQv2Kqf1KeAMVgscmDBz",
             )
             .unwrap())
             {
@@ -1256,7 +1265,7 @@ mod tests {
         let mut test_margin: Option<Margin> = None;
         for (_key, margin) in margins.iter() {
             if margin.authority.eq(&Pubkey::from_str(
-                "HQ9LbdLZXSBrepenQkwTyjDcsvNzmam1tZNjhtLt8o6D",
+                "53qyL9jgfsABQAsn3ZUSstd5fQv2Kqf1KeAMVgscmDBz",
             )
             .unwrap())
             {
@@ -1323,7 +1332,7 @@ mod tests {
         let mut test_margin: Option<Margin> = None;
         for (_key, margin) in margins.iter() {
             if margin.authority.eq(&Pubkey::from_str(
-                "zuCM1fMKnuKrpoy1zB9cQiFrkpiZXmrScN8e1coVEdF",
+                "53qyL9jgfsABQAsn3ZUSstd5fQv2Kqf1KeAMVgscmDBz",
             )
             .unwrap())
             {
