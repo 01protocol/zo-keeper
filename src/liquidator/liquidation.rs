@@ -63,9 +63,11 @@ pub async fn liquidate_loop(st: &'static crate::AppState, database: DbWrapper) {
         };
 
         if last_refresh.elapsed().as_secs() > 300 {
-            database.refresh_accounts(st).unwrap(); // TODO: Refactor this is bad.
+            match database.refresh_accounts(st) {
+                Ok(_) => info!("Refreshed account table"),
+                Err(e) => warn!("Failed to refresh: {}", e),
+            }
             last_refresh = std::time::Instant::now();
-            info!("Refreshed account table");
         }
     }
 }
@@ -130,12 +132,14 @@ pub fn liquidate(
     let mut quote_info: Option<(usize, &I80F48)> = None;
     let mut current_weight = 1000;
     for (i, coll) in collateral_tuple {
-        if coll > &I80F48::from_num(DUST_THRESHOLD) && state.collaterals[i].weight <= current_weight {
+        if coll > &I80F48::from_num(DUST_THRESHOLD)
+            && state.collaterals[i].weight <= current_weight
+        {
             current_weight = state.collaterals[i].weight;
             quote_info = Some((i, &coll));
         }
     }
-    
+
     // Sort the positions
     let positions: Vec<I80F48> = control
         .open_orders_agg
@@ -181,7 +185,8 @@ pub fn liquidate(
     );
     let market_info = market_infos[position_index];
 
-    let is_spot_bankrupt = colls.iter().all(|col| col < &DUST_THRESHOLD) && colls.iter().sum::<I80F48>().is_negative();
+    let is_spot_bankrupt = colls.iter().all(|col| col < &DUST_THRESHOLD)
+        && colls.iter().sum::<I80F48>().is_negative();
 
     if has_positions
         && (min_col.abs() <= max_position_notional.abs() || is_spot_bankrupt)

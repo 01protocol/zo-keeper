@@ -14,10 +14,9 @@ use solana_client::{
     rpc_request::{RpcError, RpcResponseErrorData},
 };
 use solana_sdk::{
-    account::Account, commitment_config::CommitmentConfig, pubkey::Pubkey,
-    signature::Signature,
+    account::Account, commitment_config::CommitmentConfig,
+    instruction::InstructionError, pubkey::Pubkey, signature::Signature,
     transaction::TransactionError,
-    instruction::InstructionError
 };
 
 use std::ops::Deref;
@@ -61,7 +60,7 @@ where
 pub fn load_program_accounts<T>(
     client: &RpcClient,
     program_address: &Pubkey,
-) -> Result<Vec<(Pubkey, T)>, ErrorCode>
+) -> Result<Vec<(Pubkey, T)>, ClientError>
 where
     T: ZeroCopy + Owner,
 {
@@ -82,14 +81,13 @@ where
         with_context: Some(false),
     };
 
-    Ok(client
+    client
         .get_program_accounts_with_config(program_address, config)
         .map(|v| {
             v.into_iter()
                 .map(|(k, mut a)| (k, get_type_from_account::<T>(&k, &mut a)))
                 .collect()
         })
-        .unwrap())
 }
 
 fn get_oracle_index(cache: &Cache, s: &Symbol) -> Option<usize> {
@@ -148,19 +146,18 @@ pub fn array_to_pubkey(array: &[u64; 4]) -> Pubkey {
     Pubkey::new(&array_to_le_bytes(array))
 }
 
-pub fn get_preflight_error_code(
-    error: &RpcError,
-) -> Option<&u32> {
+pub fn get_preflight_error_code(error: &RpcError) -> Option<&u32> {
     let mut error_code = None;
 
     if let RpcError::RpcResponseError {
         code: _,
         message: _,
         data,
-    } = error {
-        if let RpcResponseErrorData::SendTransactionPreflightFailure(
-            result
-        ) = data {
+    } = error
+    {
+        if let RpcResponseErrorData::SendTransactionPreflightFailure(result) =
+            data
+        {
             if let Some(tx_err) = &result.err {
                 if let TransactionError::InstructionError(_, ix_err) = tx_err {
                     if let InstructionError::Custom(code) = ix_err {
@@ -169,12 +166,12 @@ pub fn get_preflight_error_code(
                 }
             }
         }
-    } 
+    }
 
     error_code
 }
 
-// TODO: Refactor to take vector of ixs 
+// TODO: Refactor to take vector of ixs
 #[tracing::instrument(skip_all, level = "error")]
 pub fn retry_send<'a>(
     make_builder: impl Fn() -> RequestBuilder<'a>,
@@ -190,19 +187,25 @@ pub fn retry_send<'a>(
                 return Ok(response);
             }
             Err(e) => {
-                if let SolanaClientError(ClientError {
-                    request: _,
-                    kind,
-                }) = e
-                {
+                if let SolanaClientError(ClientError { request: _, kind }) = e {
                     match &kind {
                         ClientErrorKind::RpcError(e) => {
                             match get_preflight_error_code(e) {
                                 Some(&code) => {
-                                    if code == 6006 || code == 6016 || code == 6046 {
-                                        warn!("Retrying with smaller liquidation");
-                                        return Err(ErrorCode::LiquidationOverExposure);
-                                    } else if code == 6007 || code == 6012 || code == 6011 {
+                                    if code == 6006
+                                        || code == 6016
+                                        || code == 6046
+                                    {
+                                        warn!(
+                                            "Retrying with smaller liquidation"
+                                        );
+                                        return Err(
+                                            ErrorCode::LiquidationOverExposure,
+                                        );
+                                    } else if code == 6007
+                                        || code == 6012
+                                        || code == 6011
+                                    {
                                         warn!("Account is not liquidatable");
                                         return Err(
                                             ErrorCode::UnrecoverableTransactionError,
@@ -252,7 +255,10 @@ pub fn retry_send<'a>(
             data: d,
         }) = e
         {
-            error!("Failed to send request. message: {:?}, data: {:?}. Code: {}", error_msg, d, c);
+            error!(
+                "Failed to send request. message: {:?}, data: {:?}. Code: {}",
+                error_msg, d, c
+            );
         } else {
             error!("Failed to send request with error {:?}", e);
         }

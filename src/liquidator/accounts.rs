@@ -11,6 +11,7 @@ use crate::liquidator::{
     error::ErrorCode, liquidation, margin_utils::*, utils::*,
 };
 
+use fixed::types::I80F48;
 use serum_dex::state::{
     Market as SerumMarket, MarketState as SerumMarketState,
 };
@@ -20,7 +21,6 @@ use std::{
     ops::Deref,
     sync::{Arc, Mutex, MutexGuard},
 };
-use fixed::types::I80F48;
 
 use tracing::{error, error_span, info};
 use zo_abi::{
@@ -68,7 +68,7 @@ impl AccountTable {
         st: &crate::AppState,
         worker_index: u8,
         worker_count: u8,
-    ) -> Self {
+    ) -> Result<Self, crate::Error> {
         // This fetches all on-chain accounts for a start
         // Assumes that the dex is started, i.e. there's a cache
         // Also need to load market state info.
@@ -93,8 +93,7 @@ impl AccountTable {
         );
 
         let margin_table: HashMap<_, _> =
-            load_program_accounts::<Margin>(&st.rpc, &zo_abi::ID)
-                .unwrap()
+            load_program_accounts::<Margin>(&st.rpc, &zo_abi::ID)?
                 .into_iter()
                 .filter(|(_, a)| {
                     is_right_remainder(&a.control, worker_count, worker_index)
@@ -102,8 +101,7 @@ impl AccountTable {
                 .collect();
 
         let control_table: HashMap<_, _> =
-            load_program_accounts::<Control>(&st.rpc, &zo_abi::ID)
-                .unwrap()
+            load_program_accounts::<Control>(&st.rpc, &zo_abi::ID)?
                 .into_iter()
                 .filter(|(k, _)| {
                     is_right_remainder(&k, worker_count, worker_index)
@@ -142,7 +140,7 @@ impl AccountTable {
             )
             .unwrap();
             let market = market_state.deref();
-            
+
             serum_markets.insert(i, *market);
 
             let vault_signer = Pubkey::create_program_address(
@@ -157,7 +155,7 @@ impl AccountTable {
             serum_vault_signers.insert(i, vault_signer);
         }
 
-        Self {
+        Ok(Self {
             margin_table,
             control_table,
             cache: st.zo_cache,
@@ -175,11 +173,15 @@ impl AccountTable {
             payer_control,
             worker_count,
             worker_index,
-        }
+        })
     }
 
-    pub fn refresh_accounts(&mut self, st: &crate::AppState) {
-        *self = Self::new(st, self.worker_index, self.worker_count);
+    pub fn refresh_accounts(
+        &mut self,
+        st: &crate::AppState,
+    ) -> Result<(), crate::Error> {
+        *self = Self::new(st, self.worker_index, self.worker_count)?;
+        Ok(())
     }
 
     pub fn update_margin(&mut self, key: Pubkey, account: Margin) {
@@ -253,11 +255,9 @@ impl DbWrapper {
         worker_count: u8,
     ) -> Self {
         DbWrapper {
-            db: Arc::new(Mutex::new(AccountTable::new(
-                st,
-                worker_index,
-                worker_count,
-            ))),
+            db: Arc::new(Mutex::new(
+                AccountTable::new(st, worker_index, worker_count).unwrap(),
+            )),
         }
     }
 
@@ -288,7 +288,6 @@ impl DbWrapper {
         let mut handles: Vec<tokio::task::JoinHandle<_>> = Vec::new();
         let span = error_span!("check_all_accounts");
         for (key, margin) in db.margin_table.clone().into_iter() {
-
             let (cancel_orders, liquidate) =
                 DbWrapper::is_liquidatable(&margin, &db, &db.state, &db.cache)?;
             if liquidate {
@@ -350,10 +349,7 @@ impl DbWrapper {
                     match result {
                         Ok(()) => {
                             span_clone.in_scope(|| {
-                                info!(
-                                    "Liquidated {}",
-                                    margin.authority
-                                );
+                                info!("Liquidated {}", margin.authority);
                             });
                         }
                         Err(e) => {
@@ -434,8 +430,8 @@ impl DbWrapper {
         // println!("{}", margin.authority);
         let control = match table.get_control_from_margin(margin) {
             Some((_key, control)) => control,
-            None => {                
-                // In this case, a margin account was just created with it's control, but the listener didn't catch the control. 
+            None => {
+                // In this case, a margin account was just created with it's control, but the listener didn't catch the control.
                 // I.e. This account is very low risk, so just skip checking this account.
                 // It will be fetched the next time all accounts are fetched, i.e. in five minutes
                 // TODO: Fetch the margin
@@ -450,7 +446,7 @@ impl DbWrapper {
             control,
             state,
             cache,
-            I80F48::from_num(0.99995f64)
+            I80F48::from_num(0.99995f64),
         );
 
         let is_above_maintenance = check_mf(
@@ -459,7 +455,7 @@ impl DbWrapper {
             control,
             state,
             cache,
-            I80F48::from_num(0.99995f64)
+            I80F48::from_num(0.99995f64),
         );
 
         Ok((!is_above_cancel && has_oo, !is_above_maintenance))
@@ -476,9 +472,9 @@ impl DbWrapper {
     pub fn refresh_accounts(
         &self,
         st: &crate::AppState,
-    ) -> Result<(), ErrorCode> {
+    ) -> Result<(), crate::Error> {
         let mut db = self.db.lock().unwrap();
-        db.refresh_accounts(st);
+        db.refresh_accounts(st)?;
         Ok(())
     }
 }

@@ -57,9 +57,11 @@ async fn listen_logs(st: &'static AppState, db: &'static mongodb::Database) {
         // On disconnect, retry every 5s.
         interval.tick().await;
 
-        let sub = ws::try_connect::<RpcSolPubSubClient>(st.cluster.ws_url())
-            .unwrap()
-            .await
+        let sub =
+            match ws::try_connect::<RpcSolPubSubClient>(st.cluster.ws_url()) {
+                Ok(x) => x.await,
+                Err(e) => Err(e),
+            }
             .and_then(|p| {
                 p.logs_subscribe(
                     RpcTransactionLogsFilter::Mentions(vec![
@@ -220,9 +222,11 @@ async fn listen_event_queue(
     let quote_decimals = 6u8;
 
     loop {
-        let sub = ws::try_connect::<RpcSolPubSubClient>(st.cluster.ws_url())
-            .unwrap()
-            .await
+        let sub =
+            match ws::try_connect::<RpcSolPubSubClient>(st.cluster.ws_url()) {
+                Ok(x) => x.await,
+                Err(e) => Err(e),
+            }
             .and_then(|p| {
                 p.account_subscribe(
                     event_q.clone(),
