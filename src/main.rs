@@ -2,12 +2,12 @@ use anchor_client::{
     solana_sdk::{commitment_config::CommitmentConfig, signer::keypair},
     Cluster,
 };
-use clap::{AppSettings, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use std::{env, time::Duration};
 use zo_keeper as lib;
 
 #[derive(Parser)]
-#[clap(term_width = 72, setting(AppSettings::DisableHelpSubcommand))]
+#[clap(term_width = 72, disable_help_subcommand = true)]
 struct Cli {
     /// RPC endpoint.
     #[clap(short, long, env = "SOLANA_RPC_URL")]
