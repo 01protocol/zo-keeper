@@ -361,11 +361,10 @@ async fn poll_open_interest(
             .unwrap()
             .as_secs() as i64;
 
-        let val = tokio::task::spawn_blocking(move || {
+        let val: Result<_, Error> = tokio::task::spawn_blocking(move || {
             let mut r = vec![0i64; st.zo_state.total_markets as usize];
 
-            crate::utils::load_program_accounts::<zo_abi::Control>(&st.rpc)
-                .unwrap()
+            crate::utils::load_program_accounts::<zo_abi::Control>(&st.rpc)?
                 .into_iter()
                 .for_each(|(_, a)| {
                     for (i, e) in r.iter_mut().enumerate() {
@@ -376,12 +375,14 @@ async fn poll_open_interest(
                     }
                 });
 
-            st.iter_markets()
+            Ok(st
+                .iter_markets()
                 .enumerate()
                 .map(|(i, m)| (m.symbol.into(), r[i]))
-                .collect::<HashMap<String, i64>>()
+                .collect::<HashMap<String, i64>>())
         })
-        .await;
+        .await
+        .unwrap();
 
         let val = match val {
             Ok(x) => x,
