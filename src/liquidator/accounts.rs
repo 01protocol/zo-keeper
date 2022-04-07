@@ -109,7 +109,7 @@ impl AccountTable {
                 .collect();
 
         let market_state: Vec<_> =
-            st.load_dex_markets().map(|(_, m)| m).collect();
+            st.load_dex_markets()?.into_iter().map(|(_, m)| m).collect();
 
         let mut serum_markets: HashMap<usize, _> = HashMap::new();
         let mut serum_vault_signers: HashMap<usize, _> = HashMap::new();

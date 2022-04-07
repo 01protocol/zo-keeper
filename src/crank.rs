@@ -46,14 +46,18 @@ pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
             })
         });
 
-    let update_funding_tasks = st.load_dex_markets().map(|(symbol, market)| {
-        let symbol = Arc::new(symbol);
-        let market = Arc::new(market);
+    let update_funding_tasks =
+        st.load_dex_markets()?
+            .into_iter()
+            .map(|(symbol, market)| {
+                let symbol = Arc::new(symbol);
+                let market = Arc::new(market);
 
-        loop_blocking(interval(cfg.update_funding_interval), move || {
-            update_funding(st, &symbol, &market)
-        })
-    });
+                loop_blocking(
+                    interval(cfg.update_funding_interval),
+                    move || update_funding(st, &symbol, &market),
+                )
+            });
 
     futures::join!(
         futures::future::join_all(cache_oracle_tasks),

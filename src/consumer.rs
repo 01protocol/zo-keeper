@@ -20,7 +20,7 @@ pub async fn run(
     st: &'static AppState,
     cfg: ConsumerConfig,
 ) -> Result<(), Error> {
-    let handles = st.load_dex_markets().map(|(symbol, mkt)| {
+    let handles = st.load_dex_markets()?.into_iter().map(|(symbol, mkt)| {
         let cfg = cfg.clone();
 
         tokio::task::spawn_blocking(move || {
@@ -68,12 +68,10 @@ fn consume(
     let t = Instant::now();
 
     let (event_q_buf, slot) = {
-        let res = st
-            .rpc
-            .get_account_with_commitment(
-                &market.event_q,
-                CommitmentConfig::confirmed(),
-            );
+        let res = st.rpc.get_account_with_commitment(
+            &market.event_q,
+            CommitmentConfig::confirmed(),
+        );
 
         let res = match res {
             Ok(x) => x,
@@ -172,20 +170,8 @@ fn consume(
         let orders = orders_accounts.split_at(mid);
         let margins = margin_accounts.split_at(mid);
 
-        crank_pnl(
-            st,
-            &market,
-            &controls.0,
-            &orders.0,
-            &margins.0,
-        );
-        crank_pnl(
-            st,
-            &market,
-            &controls.1,
-            &orders.1,
-            &margins.1,
-        );
+        crank_pnl(st, &market, &controls.0, &orders.0, &margins.0);
+        crank_pnl(st, &market, &controls.1, &orders.1, &margins.1);
     });
 
     *last_head = events_header.head;

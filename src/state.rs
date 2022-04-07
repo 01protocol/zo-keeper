@@ -89,16 +89,18 @@ impl AppState {
 
     pub fn load_dex_markets(
         &self,
-    ) -> impl Iterator<Item = (String, zo_abi::dex::ZoDexMarket)> + '_ {
-        self.iter_markets().map(|m| {
-            (
-                m.symbol.into(),
-                *zo_abi::dex::ZoDexMarket::deserialize(
-                    &self.rpc.get_account_data(&m.dex_market).unwrap(),
-                )
-                .unwrap(),
-            )
-        })
+    ) -> Result<Vec<(String, zo_abi::dex::ZoDexMarket)>, crate::Error> {
+        self.iter_markets()
+            .map(|m| {
+                Ok((
+                    m.symbol.into(),
+                    *zo_abi::dex::ZoDexMarket::deserialize(
+                        &self.rpc.get_account_data(&m.dex_market)?,
+                    )
+                    .unwrap(),
+                ))
+            })
+            .collect()
     }
 
     pub fn iter_oracles(&self) -> impl Iterator<Item = &zo_abi::OracleCache> {

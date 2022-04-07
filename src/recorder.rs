@@ -33,9 +33,11 @@ pub async fn run(st: &'static AppState) -> Result<(), Error> {
     let db: &'static _ = Box::leak(Box::new(db));
 
     let listen_event_q_tasks =
-        st.load_dex_markets().map(|(symbol, dex_market)| {
-            listen_event_queue(st, db, symbol, dex_market)
-        });
+        st.load_dex_markets()?
+            .into_iter()
+            .map(|(symbol, dex_market)| {
+                listen_event_queue(st, db, symbol, dex_market)
+            });
 
     futures::join!(
         listen_logs(st, db),
@@ -294,14 +296,24 @@ async fn poll_update_funding(
     // inserted into the DB if the funding time increases.
     let prev: HashMap<String, AtomicU64> = st
         .load_dex_markets()
+        .unwrap()
+        .into_iter()
         .map(|(s, _)| (s, AtomicU64::new(0)))
         .collect();
 
     loop {
         interval.tick().await;
 
-        let to_update: Vec<_> = st
-            .load_dex_markets()
+        let markets = match st.load_dex_markets() {
+            Ok(x) => x,
+            Err(e) => {
+                warn!("{}", Error::from(e));
+                continue;
+            }
+        };
+
+        let to_update: Vec<_> = markets
+            .into_iter()
             .filter(|(symbol, m)| {
                 let prev_update = prev
                     .get(symbol)
