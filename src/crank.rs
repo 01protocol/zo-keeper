@@ -14,7 +14,7 @@ pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
     let cache_oracle_tasks = st
         .iter_oracles()
         .collect::<Vec<_>>()
-        .chunks(16)
+        .chunks(6)
         .map(|x| {
             let (symbols, accounts): (Vec<String>, Vec<AccountMeta>) = x
                 .iter()
