@@ -1,7 +1,7 @@
 use mongodb::{
     bson::{doc, Document},
-    error::{BulkWriteFailure, Error as MongoError, ErrorKind},
-    options::{IndexOptions, InsertManyOptions, UpdateOptions},
+    error::{BulkWriteFailure, Error as MongoError, ErrorKind, WriteFailure},
+    options::{IndexOptions, InsertManyOptions, ReplaceOptions, UpdateOptions},
     Collection, Database, IndexModel,
 };
 use serde::Serialize;
@@ -116,6 +116,14 @@ pub struct Swap {
 pub struct OpenInterest {
     time: i64,
     values: HashMap<String, i64>,
+}
+
+#[derive(Serialize)]
+pub struct MarkTwap {
+    #[serde(rename = "lastSampleStartTime")]
+    pub last_sample_start_time: i64,
+    pub symbol: String,
+    pub twap: f64,
 }
 
 #[tracing::instrument(
@@ -361,5 +369,53 @@ impl OpenInterest {
             [IndexModel::builder().keys(doc! { "time": 1 }).build()],
         )
         .await
+    }
+}
+
+impl MarkTwap {
+    #[tracing::instrument(
+        skip_all,
+        level = "error",
+        fields(coll = "markTwap", symbol = %x.symbol),
+    )]
+    pub async fn upsert(db: &Database, x: &Self) -> Result<(), MongoError> {
+        let c = db.collection::<Self>("markTwap");
+
+        c.create_indexes(
+            [IndexModel::builder()
+                .keys(doc! { "lastSampleStartTime": 1, "symbol": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build()],
+            None,
+        )
+        .await?;
+
+        let r = c
+            .replace_one(
+                doc! {
+                    "lastSampleStartTime": x.last_sample_start_time,
+                    "symbol": &x.symbol,
+                },
+                x,
+                Some(ReplaceOptions::builder().upsert(true).build()),
+            )
+            .await;
+
+        match r {
+            Err(e) => match *e.kind {
+                ErrorKind::Write(WriteFailure::WriteError(e))
+                    if e.code == 11000 =>
+                {
+                    tracing::error!("testing");
+                    debug!("ignored due to duplicate key");
+                }
+                _ => return Err(e),
+            },
+            Ok(r) => {
+                debug!("updated {} documents", r.modified_count);
+            }
+        }
+
+        Ok(())
     }
 }
