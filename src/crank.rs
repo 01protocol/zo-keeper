@@ -10,11 +10,14 @@ pub struct CrankConfig {
     pub update_funding_interval: Duration,
 }
 
+const CACHE_ORACLE_CHUNK_SIZE: usize = 6;
+const CACHE_INTEREST_CHUNK_SIZE: usize = 12;
+
 pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
     let cache_oracle_tasks = st
         .iter_oracles()
         .collect::<Vec<_>>()
-        .chunks(6)
+        .chunks(CACHE_ORACLE_CHUNK_SIZE)
         .map(|x| {
             let (symbols, accounts): (Vec<String>, Vec<AccountMeta>) = x
                 .iter()
@@ -36,10 +39,13 @@ pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
         .collect::<Vec<_>>();
 
     let cache_interest_tasks = (0..st.zo_state.total_collaterals as u8)
-        .step_by(8)
+        .step_by(CACHE_INTEREST_CHUNK_SIZE)
         .map(|i| {
             let start = i;
-            let end = min(i + 4, st.zo_state.total_collaterals as u8);
+            let end = min(
+                i + CACHE_INTEREST_CHUNK_SIZE as u8,
+                st.zo_state.total_collaterals as u8,
+            );
 
             loop_blocking(interval(cfg.cache_interest_interval), move || {
                 cache_interest(st, start, end)
@@ -47,17 +53,14 @@ pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
         });
 
     let update_funding_tasks =
-        st.load_dex_markets()?
-            .into_iter()
-            .map(|(symbol, market)| {
-                let symbol = Arc::new(symbol);
-                let market = Arc::new(market);
+        st.load_dex_markets()?.into_iter().map(|(symbol, market)| {
+            let symbol = Arc::new(symbol);
+            let market = Arc::new(market);
 
-                loop_blocking(
-                    interval(cfg.update_funding_interval),
-                    move || update_funding(st, &symbol, &market),
-                )
-            });
+            loop_blocking(interval(cfg.update_funding_interval), move || {
+                update_funding(st, &symbol, &market)
+            })
+        });
 
     futures::join!(
         futures::future::join_all(cache_oracle_tasks),
