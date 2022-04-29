@@ -77,6 +77,58 @@ fn interval(d: Duration) -> Interval {
     interval
 }
 
+fn dispatch(st: &AppState, req: anchor_client::RequestBuilder) {
+    use anchor_client::solana_sdk::{
+        commitment_config::CommitmentConfig, signer::Signer as _,
+        transaction::Transaction,
+    };
+
+    const GET_STATUS_RETRIES: usize = 25;
+    const GET_STATUS_WAIT: u64 = 2000;
+
+    // This auxiliary function emulates the same logic as the solana
+    // client's `send_and_confirm_transaction` function, but does not
+    // retry `usize::MAX` times as that ends up spawning too many
+    // processes.
+    let aux = move || -> Result<_, Error> {
+        let ixs = req.instructions().unwrap();
+        let bh = st.rpc.get_latest_blockhash()?;
+        let payer = st.payer_key();
+        let tx = Transaction::new_signed_with_payer(
+            &ixs,
+            Some(&payer.pubkey()),
+            // NOTE: For cranking, no other signer is required.
+            &[payer],
+            bh,
+        );
+        let sg = st.rpc.send_transaction(&tx)?;
+
+        for _ in 0..GET_STATUS_RETRIES {
+            match st.rpc.get_signature_status(&sg)? {
+                Some(Ok(_)) => return Ok(sg),
+                Some(Err(e)) => return Err(e.into()),
+                None => {
+                    if !st.rpc.is_blockhash_valid(
+                        &bh,
+                        CommitmentConfig::processed(),
+                    )? {
+                        break;
+                    }
+
+                    std::thread::sleep(Duration::from_millis(GET_STATUS_WAIT));
+                }
+            }
+        }
+
+        Err(Error::ConfirmationTimeout(sg))
+    };
+
+    match aux() {
+        Ok(sg) => info!("{}", sg),
+        Err(e) => warn!("{}", e),
+    };
+}
+
 async fn loop_blocking<F>(mut interval: Interval, f: F)
 where
     F: Fn() + Send + Clone + 'static,
@@ -103,59 +155,39 @@ fn cache_oracle(st: &AppState, s: &[String], accs: &[AccountMeta]) {
 
     let req = accs.iter().fold(req, |r, x| r.accounts(x.clone()));
 
-    match req.send() {
-        Ok(sg) => info!("{}", sg),
-        Err(e) => {
-            let e = Error::from(e);
-            warn!("{}", e);
-        }
-    };
+    dispatch(st, req);
 }
 
 #[tracing::instrument(skip_all, level = "error", fields(from = start, to = end))]
 fn cache_interest(st: &AppState, start: u8, end: u8) {
-    let program = st.program();
-    let res = program
-        .request()
-        .args(zo_abi::instruction::CacheInterestRates { start, end })
-        .accounts(zo_abi::accounts::CacheInterestRates {
-            signer: st.payer(),
-            state: st.zo_state_pubkey,
-            cache: st.zo_cache_pubkey,
-        })
-        .send();
-
-    match res {
-        Ok(sg) => info!("{}", sg),
-        Err(e) => {
-            let e = Error::from(e);
-            warn!("{}", e);
-        }
-    };
+    dispatch(
+        st,
+        st.program()
+            .request()
+            .args(zo_abi::instruction::CacheInterestRates { start, end })
+            .accounts(zo_abi::accounts::CacheInterestRates {
+                signer: st.payer(),
+                state: st.zo_state_pubkey,
+                cache: st.zo_cache_pubkey,
+            }),
+    );
 }
 
 #[tracing::instrument(skip_all, level = "error", fields(symbol = symbol))]
 fn update_funding(st: &AppState, symbol: &str, m: &zo_abi::dex::ZoDexMarket) {
-    let program = st.program();
-    let res = program
-        .request()
-        .args(zo_abi::instruction::UpdatePerpFunding {})
-        .accounts(zo_abi::accounts::UpdatePerpFunding {
-            state: st.zo_state_pubkey,
-            state_signer: st.zo_state_signer_pubkey,
-            cache: st.zo_cache_pubkey,
-            dex_market: m.own_address,
-            market_bids: m.bids,
-            market_asks: m.asks,
-            dex_program: zo_abi::ZO_DEX_PID,
-        })
-        .send();
-
-    match res {
-        Ok(sg) => info!("{}", sg),
-        Err(e) => {
-            let e = Error::from(e);
-            warn!("{}", e);
-        }
-    };
+    dispatch(
+        st,
+        st.program()
+            .request()
+            .args(zo_abi::instruction::UpdatePerpFunding {})
+            .accounts(zo_abi::accounts::UpdatePerpFunding {
+                state: st.zo_state_pubkey,
+                state_signer: st.zo_state_signer_pubkey,
+                cache: st.zo_cache_pubkey,
+                dex_market: m.own_address,
+                market_bids: m.bids,
+                market_asks: m.asks,
+                dex_program: zo_abi::ZO_DEX_PID,
+            }),
+    );
 }

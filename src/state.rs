@@ -64,6 +64,10 @@ impl AppState {
         self.payer.pubkey()
     }
 
+    pub fn payer_key(&self) -> &Keypair {
+        &self.payer
+    }
+
     pub fn client(&self) -> Client {
         Client::new_with_options(
             self.cluster.clone(),

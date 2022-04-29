@@ -2,6 +2,8 @@
 pub enum Error {
     #[error("Skipped oracles {}", .0.join(", "))]
     OraclesSkipped(Vec<String>),
+    #[error("Failed to confirm: {0}")]
+    ConfirmationTimeout(anchor_client::solana_sdk::signature::Signature),
 
     // Library errors
     #[error("{0}: {0:?}")]
