@@ -10,7 +10,7 @@ pub struct CrankConfig {
     pub update_funding_interval: Duration,
 }
 
-const CACHE_ORACLE_CHUNK_SIZE: usize = 6;
+const CACHE_ORACLE_CHUNK_SIZE: usize = 3;
 const CACHE_INTEREST_CHUNK_SIZE: usize = 12;
 
 pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
@@ -19,15 +19,23 @@ pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
         .collect::<Vec<_>>()
         .chunks(CACHE_ORACLE_CHUNK_SIZE)
         .map(|x| {
-            let (symbols, accounts): (Vec<String>, Vec<AccountMeta>) = x
+            let symbols: Vec<_> = x.iter().map(|o| o.symbol.into()).collect();
+            let accounts: Vec<_> = x
                 .iter()
-                .map(|x| {
-                    let symbol = x.symbol.into();
-                    let acc =
-                        AccountMeta::new_readonly(x.sources[0].key, false);
-                    (symbol, acc)
-                })
-                .unzip();
+                .map(|o| o.sources[0].key)
+                .chain(
+                    st.zo_state
+                        .perp_markets
+                        .iter()
+                        .filter(|m| {
+                            x.iter()
+                                .find(|o| o.symbol == m.oracle_symbol)
+                                .is_some()
+                        })
+                        .map(|m| m.dex_market),
+                )
+                .map(|k| AccountMeta::new_readonly(k, false))
+                .collect();
 
             let symbols = Arc::new(symbols);
             let accounts = Arc::new(accounts);
@@ -150,7 +158,9 @@ fn cache_oracle(st: &AppState, s: &[String], accs: &[AccountMeta]) {
         })
         .accounts(zo_abi::accounts::CacheOracle {
             signer: st.payer(),
+            state: st.zo_state_pubkey,
             cache: st.zo_cache_pubkey,
+            dex_program: zo_abi::ZO_DEX_PID,
         });
 
     let req = accs.iter().fold(req, |r, x| r.accounts(x.clone()));
