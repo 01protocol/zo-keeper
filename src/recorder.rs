@@ -15,9 +15,9 @@ use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_rpc::rpc_pubsub::RpcSolPubSubClient;
 use solana_transaction_status::UiTransactionEncoding;
 use std::{
+    cell::Cell,
     collections::HashMap,
     env,
-    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime},
 };
 use tracing::{debug, error, info, trace, warn, Instrument};
@@ -298,11 +298,11 @@ async fn poll_update_funding(
 
     // Previous update funding time. The funding is only
     // inserted into the DB if the funding time increases.
-    let prev: HashMap<String, AtomicU64> = st
+    let prev: HashMap<String, Cell<zo_abi::dex::ZoDexMarket>> = st
         .load_dex_markets()
         .unwrap()
         .into_iter()
-        .map(|(s, _)| (s, AtomicU64::new(0)))
+        .map(|(s, m)| (s, Cell::new(m)))
         .collect();
 
     loop {
@@ -318,13 +318,13 @@ async fn poll_update_funding(
 
         let to_update: Vec<_> = markets
             .into_iter()
-            .filter(|(symbol, m)| {
-                let prev_update = prev
-                    .get(symbol)
-                    .map(|x| x.load(Ordering::Relaxed))
-                    .unwrap();
+            .filter_map(|(symbol, m)| {
+                let prev_m = prev.get(&symbol).map(|x| x.get()).unwrap();
 
-                m.last_updated > prev_update
+                match m.last_updated > prev_m.last_updated {
+                    true => Some((symbol, m, prev_m)),
+                    false => None,
+                }
             })
             .collect();
 
@@ -335,10 +335,31 @@ async fn poll_update_funding(
 
         let new_entries: Vec<_> = to_update
             .iter()
-            .map(|(symbol, m)| db::Funding {
-                symbol: symbol.clone(),
-                funding_index: { m.funding_index }.to_string(),
-                time: m.last_updated as i64,
+            .zip(st.iter_markets())
+            .map(|((symbol, m, prev_m), p)| {
+                use fixed::types::I80F48;
+
+                // small/big
+                let delta =
+                    I80F48::from_num(m.funding_index - prev_m.funding_index);
+
+                let price: I80F48 = st
+                    .iter_oracles()
+                    .find(|o| o.symbol == p.oracle_symbol)
+                    .unwrap()
+                    .price
+                    .into();
+
+                // small/small -> small/big
+                let price =
+                    price * I80F48::from(10u64.pow(p.asset_decimals.into()));
+
+                db::Funding {
+                    symbol: symbol.clone(),
+                    funding_index: { m.funding_index }.to_string(),
+                    hourly: (delta / price).to_num::<f64>(),
+                    time: m.last_updated as i64,
+                }
             })
             .collect();
 
@@ -349,12 +370,10 @@ async fn poll_update_funding(
         }
 
         let updated: Vec<_> =
-            to_update.iter().map(|(s, _)| s).cloned().collect();
+            to_update.iter().map(|(s, _, _)| s).cloned().collect();
 
-        for (s, m) in to_update.into_iter() {
-            prev.get(&s)
-                .unwrap()
-                .store(m.last_updated, Ordering::Relaxed);
+        for (s, m, _) in to_update.into_iter() {
+            prev.get(&s).unwrap().set(m);
         }
 
         info!("inserted {}", updated.join(", "));
@@ -463,7 +482,8 @@ async fn poll_mark_twap(st: &'static AppState, db: &'static mongodb::Database) {
                     / I80F48::from_num(4);
 
                 db::MarkTwap {
-                    last_sample_start_time: c.twap.last_sample_start_time as i64,
+                    last_sample_start_time: c.twap.last_sample_start_time
+                        as i64,
                     symbol: m.symbol.into(),
                     twap: twap.to_num::<f64>(),
                 }

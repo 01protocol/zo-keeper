@@ -29,6 +29,7 @@ pub struct Funding {
     pub symbol: String,
     #[serde(rename = "fundingIndex")]
     pub funding_index: String,
+    pub hourly: f64,
     #[serde(rename = "time")]
     pub time: i64,
 }
