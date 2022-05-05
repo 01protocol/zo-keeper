@@ -4,10 +4,7 @@ use anchor_client::{
         RpcAccountInfoConfig, RpcTransactionConfig, RpcTransactionLogsConfig,
         RpcTransactionLogsFilter,
     },
-    solana_sdk::{
-        commitment_config::CommitmentConfig, pubkey::Pubkey,
-        signature::Signature,
-    },
+    solana_sdk::{commitment_config::CommitmentConfig, signature::Signature},
 };
 use futures::{StreamExt, TryFutureExt};
 use jsonrpc_core_client::transports::ws;
@@ -20,7 +17,7 @@ use std::{
     env,
     time::{Duration, SystemTime},
 };
-use tracing::{debug, error, info, trace, warn, Instrument};
+use tracing::{debug, info, trace, warn, Instrument};
 
 #[cfg(not(feature = "devnet"))]
 static DB_NAME: &str = "keeper";
@@ -47,7 +44,6 @@ pub async fn run(st: &'static AppState) -> Result<(), Error> {
         poll_logs(st, db),
         poll_update_funding(st, db),
         poll_open_interest(st, db),
-        poll_mark_twap(st, db),
         futures::future::join_all(listen_event_q_tasks),
     );
 
@@ -431,71 +427,5 @@ async fn poll_open_interest(
             let e = Error::from(e);
             warn!("{}", e);
         }
-    }
-}
-
-#[tracing::instrument(skip_all, level = "error", name = "oracle_twap")]
-async fn poll_mark_twap(st: &'static AppState, db: &'static mongodb::Database) {
-    let mut interval = tokio::time::interval(Duration::from_secs(30));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-    loop {
-        interval.tick().await;
-
-        let cache: Result<Result<zo_abi::Cache, _>, _> =
-            tokio::task::spawn_blocking(move || {
-                st.program().account(st.zo_cache_pubkey)
-            })
-            .await;
-
-        let cache = match cache {
-            Err(e) => {
-                error!("task panicked: {}", e);
-                continue;
-            }
-            Ok(x) => match x {
-                Err(e) => {
-                    warn!("{}", Error::from(e));
-                    continue;
-                }
-                Ok(x) => x,
-            },
-        };
-
-        let tasks = st
-            .zo_state
-            .perp_markets
-            .iter()
-            .zip(cache.marks.iter())
-            .filter(|(m, _)| m.dex_market != Pubkey::default())
-            .map(|(m, c)| {
-                use fixed::types::I80F48;
-
-                let adj =
-                    I80F48::from_num(10u64.pow((m.asset_decimals - 6) as u32));
-
-                let twap = adj
-                    * (I80F48::from(c.twap.open)
-                        + I80F48::from(c.twap.close)
-                        + I80F48::from(c.twap.high)
-                        + I80F48::from(c.twap.low))
-                    / I80F48::from_num(4);
-
-                db::MarkTwap {
-                    last_sample_start_time: c.twap.last_sample_start_time
-                        as i64,
-                    symbol: m.symbol.into(),
-                    twap: twap.to_num::<f64>(),
-                }
-            })
-            .map(|t| {
-                tokio::spawn(async move {
-                    if let Err(e) = db::MarkTwap::upsert(db, &t).await {
-                        warn!("{}", Error::from(e));
-                    }
-                })
-            });
-
-        futures::future::join_all(tasks).await;
     }
 }
