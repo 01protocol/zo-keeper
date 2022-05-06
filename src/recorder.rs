@@ -314,11 +314,12 @@ async fn poll_update_funding(
 
         let to_update: Vec<_> = markets
             .into_iter()
-            .filter_map(|(symbol, m)| {
+            .zip(st.iter_markets())
+            .filter_map(|((symbol, m), p)| {
                 let prev_m = prev.get(&symbol).map(|x| x.get()).unwrap();
 
                 match m.last_updated > prev_m.last_updated {
-                    true => Some((symbol, m, prev_m)),
+                    true => Some((symbol, m, prev_m, p)),
                     false => None,
                 }
             })
@@ -331,14 +332,14 @@ async fn poll_update_funding(
 
         let new_entries: Vec<_> = to_update
             .iter()
-            .zip(st.iter_markets())
-            .map(|((symbol, m, prev_m), p)| {
+            .map(|(symbol, m, prev_m, p)| {
                 use fixed::types::I80F48;
 
                 // small/big
                 let delta =
                     I80F48::from_num(m.funding_index - prev_m.funding_index);
 
+                // small/small
                 let price: I80F48 = st
                     .iter_oracles()
                     .find(|o| o.symbol == p.oracle_symbol)
@@ -346,9 +347,28 @@ async fn poll_update_funding(
                     .price
                     .into();
 
-                // small/small -> small/big
-                let price =
-                    price * I80F48::from(10u64.pow(p.asset_decimals.into()));
+                // small/small -> big/big
+                let mut price = match p.asset_decimals >= 6 {
+                    true => {
+                        price
+                            * I80F48::from(
+                                10u64.pow(p.asset_decimals as u32 - 6),
+                            )
+                    }
+                    false => {
+                        price
+                            / I80F48::from(
+                                10u64.pow(6 - p.asset_decimals as u32),
+                            )
+                    }
+                };
+
+                if p.perp_type == zo_abi::PerpType::Square {
+                    price = price * price / I80F48::from(p.strike);
+                }
+
+                // big/big -> small/big
+                price *= I80F48::from(10u64.pow(6));
 
                 db::Funding {
                     symbol: symbol.clone(),
@@ -366,9 +386,9 @@ async fn poll_update_funding(
         }
 
         let updated: Vec<_> =
-            to_update.iter().map(|(s, _, _)| s).cloned().collect();
+            to_update.iter().map(|(s, _, _, _)| s).cloned().collect();
 
-        for (s, m, _) in to_update.into_iter() {
+        for (s, m, _, _) in to_update.into_iter() {
             prev.get(&s).unwrap().set(m);
         }
 
