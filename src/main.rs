@@ -45,9 +45,13 @@ enum Command {
 
     /// Consume events for each market
     Consumer {
-        /// Events to consume each iteration
+        /// Events to consume in each instruction
         #[clap(long, default_value = "12")]
         to_consume: usize,
+
+        /// Number of instructions to send per iteration
+        #[clap(long, default_value = "5")]
+        ix_stack: usize,
 
         /// Maximum time to stay idle, in seconds
         #[clap(long, default_value = "30", parse(try_from_str = parse_seconds))]
@@ -144,12 +148,14 @@ fn main() -> Result<(), lib::Error> {
         ))?,
         Command::Consumer {
             to_consume,
+            ix_stack,
             max_wait,
             max_queue_length,
         } => rt.block_on(lib::consumer::run(
             app_state,
             lib::consumer::ConsumerConfig {
                 to_consume,
+                ix_stack,
                 max_wait,
                 max_queue_length,
             },

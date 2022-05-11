@@ -3,6 +3,10 @@ use anchor_client::{
     anchor_lang::prelude::AccountMeta,
     solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey},
 };
+use anchor_lang::{
+    prelude::ToAccountMetas, solana_program::instruction::Instruction,
+    InstructionData,
+};
 use std::{
     collections::{BTreeSet, HashMap},
     time::{Duration, Instant},
@@ -12,6 +16,7 @@ use tracing::{debug, info, trace, warn};
 #[derive(Clone)]
 pub struct ConsumerConfig {
     pub to_consume: usize,
+    pub ix_stack: usize,
     pub max_wait: Duration,
     pub max_queue_length: usize,
 }
@@ -125,7 +130,7 @@ fn consume(
 
     for control in events.iter().map(|e| bytemuck::cast(e.control)) {
         used_control.insert(control);
-        if used_control.len() >= cfg.to_consume {
+        if used_control.len() >= cfg.to_consume * cfg.ix_stack {
             break;
         }
     }
@@ -159,11 +164,12 @@ fn consume(
 
     let market = *market;
     let limit = cfg.to_consume as u16;
+    let stack = cfg.ix_stack as u16;
     let span = tracing::Span::current();
 
     std::thread::spawn(move || {
         let _g = span.enter();
-        consume_events(st, &market, limit, &control_accounts, &orders_accounts);
+        consume_events(st, &market, limit, stack, &control_accounts, &orders_accounts);
 
         let mid = control_accounts.len() / 2;
         let controls = control_accounts.split_at(mid);
@@ -198,26 +204,39 @@ fn consume_events(
     st: &AppState,
     market: &zo_abi::dex::ZoDexMarket,
     limit: u16,
+    stack: u16,
     control_accounts: &[AccountMeta],
     orders_accounts: &[AccountMeta],
 ) {
     let program = st.program();
-    let req = program
-        .request()
-        .args(zo_abi::instruction::ConsumeEvents { limit })
-        .accounts(zo_abi::accounts::ConsumeEvents {
+
+    let mut req = program
+        .request();
+    
+    for _i in 0..stack {
+
+        let accounts = zo_abi::accounts::ConsumeEvents {
             state: st.zo_state_pubkey,
             state_signer: st.zo_state_signer_pubkey,
             dex_program: zo_abi::ZO_DEX_PID,
             market: market.own_address,
             event_queue: market.event_q,
-        });
+        };
+        let args = zo_abi::instruction::ConsumeEvents { limit };
+        
+        // Future improvement (for account limits) is to only pass the relevant oo accounts to each ix
+        let mut metas = accounts.to_account_metas(None);
+        metas.extend_from_slice(control_accounts);
+        metas.extend_from_slice(orders_accounts);
 
-    let res = control_accounts
-        .iter()
-        .chain(orders_accounts.iter())
-        .fold(req, |r, x| r.accounts(x.clone()))
-        .send();
+        req = req.instruction(Instruction {
+            accounts: metas,
+            data: args.data(),
+            program_id: program.id(),
+        });
+    }
+
+    let res = req.send();
 
     match res {
         Ok(sg) => info!("consume_events: {}", sg),
