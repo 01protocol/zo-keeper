@@ -60,8 +60,11 @@ pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
             })
         });
 
-    let update_funding_tasks =
-        st.load_dex_markets()?.into_iter().map(|(symbol, market)| {
+    let update_funding_tasks = st
+        .load_dex_markets()?
+        .into_iter()
+        .filter(|(symbol, _)| symbol != "LUNA-PERP")
+        .map(|(symbol, market)| {
             let symbol = Arc::new(symbol);
             let market = Arc::new(market);
 
