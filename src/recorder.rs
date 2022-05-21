@@ -69,7 +69,9 @@ async fn listen_logs(st: &'static AppState, db: &'static mongodb::Database) {
                     RpcTransactionLogsFilter::Mentions(vec![
                         zo_abi::ID.to_string()
                     ]),
-                    Some(RpcTransactionLogsConfig { commitment: None }),
+                    Some(RpcTransactionLogsConfig {
+                        commitment: Some(CommitmentConfig::finalized()),
+                    }),
                 )
             });
 
