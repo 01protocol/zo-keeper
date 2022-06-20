@@ -1,6 +1,9 @@
 use crate::{error::Error, AppState};
-use anchor_client::solana_sdk::instruction::AccountMeta;
-use std::{cmp::min, marker::Send, sync::Arc, time::Duration};
+use anchor_client::solana_sdk::{
+    compute_budget::ComputeBudgetInstruction,
+    instruction::{AccountMeta, Instruction},
+};
+use std::{marker::Send, sync::Arc, time::Duration};
 use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{info, warn};
 
@@ -10,12 +13,16 @@ pub struct CrankConfig {
     pub update_funding_interval: Duration,
 }
 
-const CACHE_ORACLE_CHUNK_SIZE: usize = 3;
-const CACHE_INTEREST_CHUNK_SIZE: usize = 12;
+const CACHE_ORACLE_CHUNK_SIZE: usize = 28;
+const CACHE_ORACLE_CU_PER_ACCOUNT: usize = 1_400_000 / CACHE_ORACLE_CHUNK_SIZE;
+const CACHE_INTEREST_CU_PER_ACCOUNT: usize = 30_000;
+const UPDATE_FUNDING_CHUNK_SIZE: usize = 4;
+const UPDATE_FUNDING_CU_PER_ACCOUNT: usize = 100_000;
 
 pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
     let cache_oracle_tasks = st
         .iter_oracles()
+        .filter(|x| String::from(x.symbol) != "LUNA")
         .collect::<Vec<_>>()
         .chunks(CACHE_ORACLE_CHUNK_SIZE)
         .map(|x| {
@@ -28,9 +35,7 @@ pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
                         .perp_markets
                         .iter()
                         .filter(|m| {
-                            x.iter()
-                                .find(|o| o.symbol == m.oracle_symbol)
-                                .is_some()
+                            x.iter().any(|o| o.symbol == m.oracle_symbol)
                         })
                         .map(|m| m.dex_market),
                 )
@@ -46,36 +51,31 @@ pub async fn run(st: &'static AppState, cfg: CrankConfig) -> Result<(), Error> {
         })
         .collect::<Vec<_>>();
 
-    let cache_interest_tasks = (0..st.zo_state.total_collaterals as u8)
-        .step_by(CACHE_INTEREST_CHUNK_SIZE)
-        .map(|i| {
-            let start = i;
-            let end = min(
-                i + CACHE_INTEREST_CHUNK_SIZE as u8,
-                st.zo_state.total_collaterals as u8,
-            );
-
-            loop_blocking(interval(cfg.cache_interest_interval), move || {
-                cache_interest(st, start, end)
-            })
+    let cache_interest_task =
+        loop_blocking(interval(cfg.cache_interest_interval), move || {
+            cache_interest(st)
         });
 
     let update_funding_tasks = st
         .load_dex_markets()?
         .into_iter()
-        .filter(|(symbol, _)| symbol != "LUNA-PERP")
-        .map(|(symbol, market)| {
-            let symbol = Arc::new(symbol);
-            let market = Arc::new(market);
+        .filter(|(s, _)| s != "LUNA-PERP")
+        .collect::<Vec<_>>()
+        .chunks(UPDATE_FUNDING_CHUNK_SIZE)
+        .map(|v| {
+            let (s, m): (Vec<_>, Vec<_>) = v.iter().cloned().unzip();
+            let symbols = Arc::new(s);
+            let markets = Arc::new(m);
 
             loop_blocking(interval(cfg.update_funding_interval), move || {
-                update_funding(st, &symbol, &market)
+                update_funding(st, &symbols, &markets)
             })
-        });
+        })
+        .collect::<Vec<_>>();
 
     futures::join!(
         futures::future::join_all(cache_oracle_tasks),
-        futures::future::join_all(cache_interest_tasks),
+        cache_interest_task,
         futures::future::join_all(update_funding_tasks),
     );
 
@@ -155,6 +155,10 @@ fn cache_oracle(st: &AppState, s: &[String], accs: &[AccountMeta]) {
     let program = st.program();
     let req = program
         .request()
+        .instruction(ComputeBudgetInstruction::request_units(
+            (s.len() * CACHE_ORACLE_CU_PER_ACCOUNT) as u32,
+            0,
+        ))
         .args(zo_abi::instruction::CacheOracle {
             symbols: s.to_owned(),
             mock_prices: None,
@@ -171,13 +175,21 @@ fn cache_oracle(st: &AppState, s: &[String], accs: &[AccountMeta]) {
     dispatch(st, req);
 }
 
-#[tracing::instrument(skip_all, level = "error", fields(from = start, to = end))]
-fn cache_interest(st: &AppState, start: u8, end: u8) {
+#[tracing::instrument(skip_all, level = "error")]
+fn cache_interest(st: &AppState) {
     dispatch(
         st,
         st.program()
             .request()
-            .args(zo_abi::instruction::CacheInterestRates { start, end })
+            .instruction(ComputeBudgetInstruction::request_units(
+                st.zo_state.total_collaterals as u32
+                    * CACHE_INTEREST_CU_PER_ACCOUNT as u32,
+                0,
+            ))
+            .args(zo_abi::instruction::CacheInterestRates {
+                start: 0,
+                end: st.zo_state.total_collaterals as u8,
+            })
             .accounts(zo_abi::accounts::CacheInterestRates {
                 signer: st.payer(),
                 state: st.zo_state_pubkey,
@@ -186,14 +198,28 @@ fn cache_interest(st: &AppState, start: u8, end: u8) {
     );
 }
 
-#[tracing::instrument(skip_all, level = "error", fields(symbol = symbol))]
-fn update_funding(st: &AppState, symbol: &str, m: &zo_abi::dex::ZoDexMarket) {
-    dispatch(
-        st,
-        st.program()
+#[tracing::instrument(skip_all, level = "error", fields(symbol = ?symbol))]
+fn update_funding(
+    st: &AppState,
+    symbol: &[String],
+    m: &[zo_abi::dex::ZoDexMarket],
+) {
+    use anchor_lang::{InstructionData, ToAccountMetas};
+
+    let program = st.program();
+    let req =
+        program
             .request()
-            .args(zo_abi::instruction::UpdatePerpFunding {})
-            .accounts(zo_abi::accounts::UpdatePerpFunding {
+            .instruction(ComputeBudgetInstruction::request_units(
+                st.zo_state.total_collaterals as u32
+                    * UPDATE_FUNDING_CU_PER_ACCOUNT as u32,
+                0,
+            ));
+
+    let req = m.iter().fold(req, |acc, m| {
+        acc.instruction(Instruction {
+            program_id: zo_abi::ID,
+            accounts: zo_abi::accounts::UpdatePerpFunding {
                 state: st.zo_state_pubkey,
                 state_signer: st.zo_state_signer_pubkey,
                 cache: st.zo_cache_pubkey,
@@ -201,6 +227,11 @@ fn update_funding(st: &AppState, symbol: &str, m: &zo_abi::dex::ZoDexMarket) {
                 market_bids: m.bids,
                 market_asks: m.asks,
                 dex_program: zo_abi::ZO_DEX_PID,
-            }),
-    );
+            }
+            .to_account_metas(None),
+            data: zo_abi::instruction::UpdatePerpFunding {}.data(),
+        })
+    });
+
+    dispatch(st, req);
 }
