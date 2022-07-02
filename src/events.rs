@@ -49,7 +49,8 @@ fn parse<'a>(
     Vec<db::Swap>,
     Option<events::CacheOracleNoops>,
 ) {
-    const PROG_LOG_PREFIX: &str = "Program log: ";
+    const PROGRAM_LOG: &str = "Program log: ";
+    const PROGRAM_DATA: &str = "Program data: ";
 
     let prog_start_str = format!("Program {} invoke", zo_abi::ID);
     let prog_end_str = format!("Program {} success", zo_abi::ID);
@@ -79,15 +80,13 @@ fn parse<'a>(
             continue;
         }
 
-        if !l.starts_with(PROG_LOG_PREFIX) {
-            continue;
-        }
-
-        let l = &l[PROG_LOG_PREFIX.len()..];
-
-        let bytes = match base64::decode(l) {
-            Ok(x) => x,
-            _ => continue,
+        let bytes = match l
+            .strip_prefix(PROGRAM_DATA)
+            .or_else(|| l.strip_prefix(PROGRAM_LOG))
+            .and_then(|s| base64::decode(s).ok())
+        {
+            Some(x) => x,
+            None => continue,
         };
 
         if let Some(e) = load::<events::RealizedPnlLog>(&bytes) {
