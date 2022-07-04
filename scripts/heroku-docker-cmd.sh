@@ -9,4 +9,5 @@ case "$DYNO" in
     consumer.*) run consumer ;;
     liquidator.*) run liquidator ;;
     recorder.*) run recorder ;;
+    trigger.*) run trigger ;;
 esac

@@ -1,7 +1,8 @@
 FROM rust:latest
 RUN apt-get update \
     && apt-get install -y libudev-dev libclang-dev lld cmake \
-    && rustup component add rustfmt
+    && rustup component add rustfmt \
+    && rustup default nightly
 WORKDIR /srv
 COPY . .
 RUN cargo build --release \
