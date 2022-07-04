@@ -74,6 +74,9 @@ enum Command {
 
     /// Listen and store events into a database
     Recorder,
+
+    /// Trigger special orders.
+    Trigger,
 }
 
 fn main() -> Result<(), lib::Error> {
@@ -88,6 +91,16 @@ fn main() -> Result<(), lib::Error> {
             .with_ansi(env::var_os("NO_COLOR").is_none())
             .finish()
             .init();
+    }
+
+    {
+        // Ensure that a panic in a spawned thread exits the main process.
+        // Unfortunately, other threads' resources are not necessarily freed.
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |x| {
+            hook(x);
+            std::process::exit(255);
+        }));
     }
 
     let Cli {
@@ -160,6 +173,7 @@ fn main() -> Result<(), lib::Error> {
             },
         ))?,
         Command::Recorder => rt.block_on(lib::recorder::run(app_state))?,
+        Command::Trigger => lib::trigger::run(app_state)?,
     };
 
     Ok(())

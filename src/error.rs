@@ -11,6 +11,8 @@ pub enum Error {
     #[error("{0}: {0:?}")]
     SolanaClient(#[from] solana_client::client_error::ClientError),
     #[error("{0}: {0:?}")]
+    SolanaPubsubClient(#[from] solana_client::pubsub_client::PubsubClientError),
+    #[error("{0}: {0:?}")]
     JsonRpc(#[from] jsonrpc_core_client::RpcError),
     #[error("{0}: {0:?}")]
     TransactionError(

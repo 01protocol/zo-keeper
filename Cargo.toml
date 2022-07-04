@@ -2,7 +2,7 @@
 name = "zo-keeper"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.58"
+rust-version = "1.63"
 
 [features]
 devnet = ["zo-abi/devnet"]
@@ -37,3 +37,4 @@ num-traits = "0.2"
 fixed = "1"
 serum_dex = "0.5"
 spl-token = "3.2"
+parking_lot = "0.12"

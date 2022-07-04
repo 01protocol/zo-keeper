@@ -7310,7 +7310,7 @@ dependencies = [
 
 [[package]]
 name = "zo-abi"
-version = "0.5.0"
+version = "0.6.0-beta.1"
 dependencies = [
  "anchor-lang",
  "bytemuck",
@@ -7336,6 +7336,7 @@ dependencies = [
  "jsonrpc-core-client",
  "mongodb",
  "num-traits",
+ "parking_lot 0.12.0",
  "serde",
  "serum_dex",
  "solana-account-decoder",
