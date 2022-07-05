@@ -1,5 +1,8 @@
 use anchor_client::{
-    solana_sdk::{commitment_config::CommitmentConfig, signer::keypair},
+    solana_sdk::{
+        commitment_config::CommitmentConfig, signature::Signature,
+        signer::keypair,
+    },
     Cluster,
 };
 use clap::{Parser, Subcommand};
@@ -71,6 +74,17 @@ enum Command {
 
     /// Listen and store events into a database
     Recorder,
+
+    /// Ensure that no events are missing
+    PollBack {
+        /// The signature to start searching from
+        #[clap(long)]
+        before: Signature,
+
+        /// Until when the search should go, UNIX timestamp
+        #[clap(long)]
+        until: i64,
+    },
 }
 
 fn main() -> Result<(), lib::Error> {
@@ -155,6 +169,9 @@ fn main() -> Result<(), lib::Error> {
             },
         ))?,
         Command::Recorder => rt.block_on(lib::recorder::run(app_state))?,
+        Command::PollBack { before, until } => {
+            rt.block_on(lib::poll_back::run(app_state, before, until))?
+        }
     };
 
     Ok(())

@@ -20,10 +20,10 @@ use std::{
 use tracing::{debug, info, trace, warn, Instrument};
 
 #[cfg(not(feature = "devnet"))]
-static DB_NAME: &str = "keeper";
+pub static DB_NAME: &str = "keeper";
 
 #[cfg(feature = "devnet")]
-static DB_NAME: &str = "keeper-devnet";
+pub static DB_NAME: &str = "keeper-devnet";
 
 pub async fn run(st: &'static AppState) -> Result<(), Error> {
     let db = mongodb::Client::with_uri_str(env::var("DATABASE_URL")?)

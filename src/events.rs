@@ -6,7 +6,7 @@ use futures::TryFutureExt;
 use tracing::warn;
 use zo_abi::events;
 
-#[tracing::instrument(skip_all, level = "error")]
+#[tracing::instrument(skip_all, level = "error", fields(sg = %sig))]
 pub async fn process(
     st: &AppState,
     db: &mongodb::Database,
