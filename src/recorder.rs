@@ -94,12 +94,18 @@ async fn listen_logs(st: &'static AppState, db: &'static mongodb::Database) {
                 continue;
             }
 
+            let time = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+
             tokio::spawn(
                 crate::events::process(
                     st,
                     db,
                     resp.value.logs,
                     resp.value.signature,
+                    time,
                 )
                 .instrument(tracing::Span::current()),
             );
@@ -158,6 +164,11 @@ async fn poll_logs(st: &'static AppState, db: &'static mongodb::Database) {
         let handle = tokio::runtime::Handle::try_current().unwrap();
         let span = tracing::Span::current();
 
+        let time = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
         for sg in sigs {
             let handle = handle.clone();
             let span = span.clone();
@@ -192,6 +203,7 @@ async fn poll_logs(st: &'static AppState, db: &'static mongodb::Database) {
                                     db,
                                     ss,
                                     sg.signature,
+                                    time,
                                 )
                                 .instrument(span.clone()),
                             );

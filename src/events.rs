@@ -3,7 +3,6 @@
 use crate::{db, AppState, Error};
 use anchor_client::anchor_lang::Event;
 use futures::TryFutureExt;
-use std::time::SystemTime;
 use tracing::warn;
 use zo_abi::events;
 
@@ -13,8 +12,9 @@ pub async fn process(
     db: &mongodb::Database,
     ss: Vec<String>,
     sig: String,
+    time: i64,
 ) {
-    let (rpnl, liq, bank, bal, swap, oracle) = parse(st, ss.iter(), sig);
+    let (rpnl, liq, bank, bal, swap, oracle) = parse(st, ss.iter(), sig, time);
 
     let on_err = |e| {
         let e = Error::from(e);
@@ -41,6 +41,7 @@ fn parse<'a>(
     st: &AppState,
     logs: impl Iterator<Item = &'a String> + 'a,
     sig: String,
+    time: i64,
 ) -> (
     Vec<db::RealizedPnl>,
     Vec<db::Liquidation>,
@@ -63,11 +64,6 @@ fn parse<'a>(
     let mut bal = Vec::new();
     let mut swap = Vec::new();
     let mut oracle = None;
-
-    let time = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
 
     for l in logs {
         if !is_zo_log {
