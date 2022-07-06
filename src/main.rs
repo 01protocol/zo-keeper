@@ -54,8 +54,11 @@ enum Command {
         max_wait: Duration,
 
         /// Maximum queue length before processing
-        #[clap(long, default_value = "1")]
+        #[clap(long, default_value = "12")]
         max_queue_length: usize,
+
+        #[clap(long, default_value = "1", parse(try_from_str = parse_seconds))]
+        poll_period: Duration,
     },
 
     /// Find liquidatable accounts and liquidate them
@@ -146,12 +149,14 @@ fn main() -> Result<(), lib::Error> {
             to_consume,
             max_wait,
             max_queue_length,
+            poll_period,
         } => rt.block_on(lib::consumer::run(
             app_state,
             lib::consumer::ConsumerConfig {
                 to_consume,
                 max_wait,
                 max_queue_length,
+                poll_period,
             },
         ))?,
         Command::Recorder => rt.block_on(lib::recorder::run(app_state))?,

@@ -14,6 +14,7 @@ pub struct ConsumerConfig {
     pub to_consume: usize,
     pub max_wait: Duration,
     pub max_queue_length: usize,
+    pub poll_period: Duration,
 }
 
 pub async fn run(
@@ -32,7 +33,7 @@ pub async fn run(
             let mut last_head = 1u64 << 48;
 
             loop {
-                std::thread::sleep(Duration::from_millis(250));
+                std::thread::sleep(cfg.poll_period);
                 consume(
                     st,
                     &symbol,
