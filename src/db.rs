@@ -169,7 +169,10 @@ where
                     // because the document already exists in the DB.
                     // Thus, we can get the total number of documents
                     // inserted by subtracting out the "failed" inserts.
-                    info!("inserted {} documents", xs.len() - es.len());
+                    match xs.len() - es.len() {
+                        0 => debug!("inserted 0 documents"),
+                        l => info!("inserted {} documents", l),
+                    }
                     Ok(())
                 }
 
@@ -177,7 +180,10 @@ where
             }
         }
         Ok(r) => {
-            info!("inserted {} documents", r.inserted_ids.len());
+            match r.inserted_ids.len() {
+                0 => debug!("inserted 0 documents"),
+                l => info!("inserted {} documents", l),
+            }
             Ok(())
         }
     }
