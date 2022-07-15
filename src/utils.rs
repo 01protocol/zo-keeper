@@ -43,6 +43,7 @@ where
             encoding: Some(UiAccountEncoding::Base64),
             data_slice: None,
             commitment: Some(CommitmentConfig::finalized()),
+            min_context_slot: None,
         },
         with_context: Some(false),
     };

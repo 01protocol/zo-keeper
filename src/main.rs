@@ -57,7 +57,7 @@ enum Command {
         #[clap(long, default_value = "12")]
         max_queue_length: usize,
 
-        #[clap(long, default_value = "1", parse(try_from_str = parse_seconds))]
+        #[clap(long, default_value = "5", parse(try_from_str = parse_seconds))]
         poll_period: Duration,
     },
 

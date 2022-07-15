@@ -103,7 +103,9 @@ fn dispatch(st: &AppState, req: anchor_client::RequestBuilder) {
     // processes.
     let aux = move || -> Result<_, Error> {
         let ixs = req.instructions().unwrap();
-        let bh = st.rpc.get_latest_blockhash()?;
+        let (bh, ..) = st.rpc.get_latest_blockhash_with_commitment(
+            CommitmentConfig::processed(),
+        )?;
         let payer = st.payer_key();
         let tx = Transaction::new_signed_with_payer(
             &ixs,
@@ -155,9 +157,8 @@ fn cache_oracle(st: &AppState, s: &[String], accs: &[AccountMeta]) {
     let program = st.program();
     let req = program
         .request()
-        .instruction(ComputeBudgetInstruction::request_units(
+        .instruction(ComputeBudgetInstruction::set_compute_unit_limit(
             (s.len() * CACHE_ORACLE_CU_PER_ACCOUNT) as u32,
-            0,
         ))
         .args(zo_abi::instruction::CacheOracle {
             symbols: s.to_owned(),
@@ -181,10 +182,9 @@ fn cache_interest(st: &AppState) {
         st,
         st.program()
             .request()
-            .instruction(ComputeBudgetInstruction::request_units(
+            .instruction(ComputeBudgetInstruction::set_compute_unit_limit(
                 st.zo_state.total_collaterals as u32
                     * CACHE_INTEREST_CU_PER_ACCOUNT as u32,
-                0,
             ))
             .args(zo_abi::instruction::CacheInterestRates {
                 start: 0,
@@ -207,14 +207,12 @@ fn update_funding(
     use anchor_lang::{InstructionData, ToAccountMetas};
 
     let program = st.program();
-    let req =
-        program
-            .request()
-            .instruction(ComputeBudgetInstruction::request_units(
-                st.zo_state.total_collaterals as u32
-                    * UPDATE_FUNDING_CU_PER_ACCOUNT as u32,
-                0,
-            ));
+    let req = program.request().instruction(
+        ComputeBudgetInstruction::set_compute_unit_limit(
+            st.zo_state.total_collaterals as u32
+                * UPDATE_FUNDING_CU_PER_ACCOUNT as u32,
+        ),
+    );
 
     let req = m.iter().fold(req, |acc, m| {
         acc.instruction(Instruction {

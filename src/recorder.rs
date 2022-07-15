@@ -189,6 +189,7 @@ async fn poll_logs(st: &'static AppState, db: &'static mongodb::Database) {
                     RpcTransactionConfig {
                         encoding: Some(UiTransactionEncoding::Base64),
                         commitment: Some(CommitmentConfig::confirmed()),
+                        max_supported_transaction_version: None,
                     },
                 );
 
@@ -250,6 +251,7 @@ async fn listen_event_queue(
                         encoding: Some(UiAccountEncoding::Base64),
                         data_slice: None,
                         commitment: None,
+                        min_context_slot: None,
                     }),
                 )
             });

@@ -1,6 +1,6 @@
 FROM rust:latest
 RUN apt-get update \
-    && apt-get install -y libudev-dev libclang-dev lld \
+    && apt-get install -y libudev-dev libclang-dev lld cmake \
     && rustup component add rustfmt
 WORKDIR /srv
 COPY . .
