@@ -14,7 +14,7 @@ pub async fn process(
     sig: String,
     time: i64,
 ) {
-    let (rpnl, liq, bank, bal, swap, oracle) = parse(st, ss.iter(), sig, time);
+    let (rpnl, liq, bank, bal, swap, otc, oracle) = parse(st, ss.iter(), sig, time);
 
     let on_err = |e| {
         let e = Error::from(e);
@@ -25,6 +25,7 @@ pub async fn process(
         db::Liquidation::update(db, &liq).map_err(on_err),
         db::Bankruptcy::update(db, &bank).map_err(on_err),
         db::BalanceChange::update(db, &bal).map_err(on_err),
+        db::OtcFill::update(db, &otc).map_err(on_err),
         db::Swap::update(db, &swap).map_err(on_err),
     );
 
@@ -48,6 +49,7 @@ fn parse<'a>(
     Vec<db::Bankruptcy>,
     Vec<db::BalanceChange>,
     Vec<db::Swap>,
+    Vec<db::OtcFill>,
     Option<events::CacheOracleNoops>,
 ) {
     const PROGRAM_LOG: &str = "Program log: ";
@@ -63,6 +65,7 @@ fn parse<'a>(
     let mut bank = Vec::new();
     let mut bal = Vec::new();
     let mut swap = Vec::new();
+    let mut otc = Vec::new();
     let mut oracle = None;
 
     for l in logs {
@@ -183,12 +186,25 @@ fn parse<'a>(
             });
         }
 
+        if let Some(e) = load::<events::OtcFill>(&bytes) {
+            otc.push(db::OtcFill {
+                time,
+                sig: sig.clone(),
+                market: e.market.to_string(),
+                taker_margin: e.taker_margin.to_string(),
+                maker_margin: e.maker_margin.to_string(),
+                d_base: e.d_base,
+                d_quote: e.d_quote,
+            });
+            continue;
+        }
+
         if let Some(e) = load::<events::CacheOracleNoops>(&bytes) {
             oracle = Some(e);
         }
     }
 
-    (rpnl, liq, bank, bal, swap, oracle)
+    (rpnl, liq, bank, bal, swap, otc, oracle)
 }
 
 #[inline(always)]

@@ -119,6 +119,18 @@ pub struct OpenInterest {
     values: HashMap<String, i64>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OtcFill {
+    pub time: i64,
+    pub sig: String,
+    pub market: String,
+    pub taker_margin: String,
+    pub maker_margin: String,
+    pub d_base: i64,
+    pub d_quote: i64,
+}
+
 #[tracing::instrument(
     skip_all,
     level = "error",
@@ -229,6 +241,10 @@ simple_update_impl! {
         "sig": 1,
         "baseSymbol": 1, "quoteSymbol": 1,
         "baseDelta": 1, "quoteDelta": 1,
+    }),
+    (OtcFill, "otc", doc! {
+        "sig": 1, "market": 1, "takerMargin": 1,
+        "dBase": 1, "dQuote": 1,
     }),
 }
 
