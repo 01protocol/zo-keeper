@@ -1,14 +1,13 @@
 use crate::{db, error::Error, AppState};
 use anchor_client::{
     solana_client::rpc_config::{
-        RpcAccountInfoConfig, RpcTransactionConfig, RpcTransactionLogsConfig,
+        RpcTransactionConfig, RpcTransactionLogsConfig,
         RpcTransactionLogsFilter,
     },
     solana_sdk::{commitment_config::CommitmentConfig, signature::Signature},
 };
-use futures::{StreamExt, TryFutureExt};
+use futures::StreamExt;
 use jsonrpc_core_client::transports::ws;
-use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_rpc::rpc_pubsub::RpcSolPubSubClient;
 use solana_transaction_status::UiTransactionEncoding;
 use std::{
@@ -32,19 +31,11 @@ pub async fn run(st: &'static AppState) -> Result<(), Error> {
 
     let db: &'static _ = Box::leak(Box::new(db));
 
-    let listen_event_q_tasks =
-        st.load_dex_markets()?
-            .into_iter()
-            .map(|(symbol, dex_market)| {
-                listen_event_queue(st, db, symbol, dex_market)
-            });
-
     futures::join!(
         listen_logs(st, db),
         poll_logs(st, db),
         poll_update_funding(st, db),
         poll_open_interest(st, db),
-        futures::future::join_all(listen_event_q_tasks),
     );
 
     Ok(())
@@ -216,85 +207,6 @@ async fn poll_logs(st: &'static AppState, db: &'static mongodb::Database) {
                         return;
                     }
                 };
-            });
-        }
-    }
-}
-
-#[tracing::instrument(
-    skip_all,
-    level = "error",
-    name = "event_queue",
-    fields(symbol = %symbol)
-)]
-async fn listen_event_queue(
-    st: &'static AppState,
-    db: &'static mongodb::Database,
-    symbol: String,
-    mkt: zo_abi::dex::ZoDexMarket,
-) {
-    let symbol = std::sync::Arc::new(symbol);
-    let event_q = mkt.event_q.to_string();
-    let base_decimals = mkt.coin_decimals as u8;
-    let quote_decimals = 6u8;
-
-    loop {
-        let sub =
-            match ws::try_connect::<RpcSolPubSubClient>(st.cluster.ws_url()) {
-                Ok(x) => x.await,
-                Err(e) => Err(e),
-            }
-            .and_then(|p| {
-                p.account_subscribe(
-                    event_q.clone(),
-                    Some(RpcAccountInfoConfig {
-                        encoding: Some(UiAccountEncoding::Base64),
-                        data_slice: None,
-                        commitment: None,
-                        min_context_slot: None,
-                    }),
-                )
-            });
-
-        let mut sub = match sub {
-            Err(e) => {
-                let e = Error::from(e);
-                warn!("{}", e);
-                continue;
-            }
-            Ok(x) => x,
-        };
-
-        while let Some(resp) = sub.next().await {
-            debug!("got update");
-
-            let resp = match resp {
-                Ok(x) => x,
-                Err(_) => continue,
-            };
-
-            let buf = match resp.value.data {
-                UiAccountData::Binary(b, _) => base64::decode(b).unwrap(),
-                _ => panic!(),
-            };
-
-            let symbol = symbol.clone();
-            let span = tracing::Span::current();
-
-            tokio::spawn(async move {
-                db::Trade::update(
-                    db,
-                    &symbol,
-                    base_decimals,
-                    quote_decimals,
-                    &buf,
-                )
-                .instrument(span)
-                .map_err(|e| {
-                    let e = Error::from(e);
-                    warn!("{}", e);
-                })
-                .await
             });
         }
     }

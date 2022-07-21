@@ -14,7 +14,8 @@ pub async fn process(
     sig: String,
     time: i64,
 ) {
-    let (rpnl, liq, bank, bal, swap, otc, oracle) = parse(st, ss.iter(), sig, time);
+    let (rpnl, liq, bank, bal, swap, otc, fill, oracle) =
+        parse(st, ss.iter(), sig, time);
 
     let on_err = |e| {
         let e = Error::from(e);
@@ -26,6 +27,7 @@ pub async fn process(
         db::Bankruptcy::update(db, &bank).map_err(on_err),
         db::BalanceChange::update(db, &bal).map_err(on_err),
         db::OtcFill::update(db, &otc).map_err(on_err),
+        db::Trade::update(db, &fill).map_err(on_err),
         db::Swap::update(db, &swap).map_err(on_err),
     );
 
@@ -50,6 +52,7 @@ fn parse<'a>(
     Vec<db::BalanceChange>,
     Vec<db::Swap>,
     Vec<db::OtcFill>,
+    Vec<db::Trade>,
     Option<events::CacheOracleNoops>,
 ) {
     const PROGRAM_LOG: &str = "Program log: ";
@@ -66,6 +69,7 @@ fn parse<'a>(
     let mut bal = Vec::new();
     let mut swap = Vec::new();
     let mut otc = Vec::new();
+    let mut fill = Vec::new();
     let mut oracle = None;
 
     for l in logs {
@@ -199,12 +203,65 @@ fn parse<'a>(
             continue;
         }
 
+        if let Some(e) = load::<events::EventFillLog>(&bytes) {
+            let (symbol, base_mul) = st
+                .iter_markets()
+                .find(|m| m.dex_market == e.market_key)
+                .map(|m| {
+                    (
+                        String::from(m.symbol),
+                        10f64.powi(m.asset_decimals.into()),
+                    )
+                })
+                .unwrap();
+
+            let quote_mul = 10f64.powi(6);
+
+            let (side, price, size) = match e.is_long {
+                true => {
+                    let price = match e.is_maker {
+                        true => e.qty_paid + e.fee_or_rebate,
+                        false => e.qty_paid - e.fee_or_rebate,
+                    };
+                    let price = ((price as f64) * base_mul)
+                        / ((e.qty_received as f64) * quote_mul);
+                    let size = (e.qty_received as f64) / base_mul;
+
+                    ("buy", price, size)
+                }
+                false => {
+                    let price = match e.is_maker {
+                        true => e.qty_received - e.fee_or_rebate,
+                        false => e.qty_received + e.fee_or_rebate,
+                    };
+                    let price = ((price as f64) * base_mul)
+                        / ((e.qty_paid as f64) * quote_mul);
+                    let size = (e.qty_paid as f64) / base_mul;
+
+                    ("sell", price, size)
+                }
+            };
+
+            fill.push(db::Trade {
+                symbol,
+                time,
+                sig: sig.clone(),
+                price,
+                size,
+                side: side.to_string(),
+                is_maker: e.is_maker,
+                margin: e.margin.to_string(),
+                control: e.control.to_string(),
+                discriminator: e.discriminator,
+            })
+        }
+
         if let Some(e) = load::<events::CacheOracleNoops>(&bytes) {
             oracle = Some(e);
         }
     }
 
-    (rpnl, liq, bank, bal, swap, otc, oracle)
+    (rpnl, liq, bank, bal, swap, otc, fill, oracle)
 }
 
 #[inline(always)]
