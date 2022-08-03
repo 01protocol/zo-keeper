@@ -20,7 +20,8 @@ pub struct Trade {
     pub is_maker: bool,
     pub margin: String,
     pub control: String,
-    pub discriminator: u16,
+    #[serde(rename = "seqNum")]
+    pub seq_num: u16,
 }
 
 #[derive(Serialize)]
@@ -246,7 +247,7 @@ simple_update_impl! {
         "dBase": 1, "dQuote": 1,
     }),
     (Trade, "trades", doc! {
-        "sig": 1, "discriminator": 1,
+        "sig": 1, "seqNum": 1,
         "symbol": 1, "price": 1, "side": 1, "size": 1,
         "isMaker": 1, "control": 1,
     }),

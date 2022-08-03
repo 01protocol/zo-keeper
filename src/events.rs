@@ -252,7 +252,9 @@ fn parse<'a>(
                 is_maker: e.is_maker,
                 margin: e.margin.to_string(),
                 control: e.control.to_string(),
-                discriminator: e.discriminator,
+                // Renamed to `seq_num` to remain compatible with the
+                // previous schema.
+                seq_num: e.discriminator,
             })
         }
 
