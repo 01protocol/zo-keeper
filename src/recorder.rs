@@ -171,15 +171,11 @@ async fn poll_logs(st: &'static AppState, db: &'static mongodb::Database) {
                 let _g = span.enter();
                 debug!("processing: {}", sg.signature);
 
-                // The signatures are received with "finalized" commitment,
-                // and the transaction itself is received with "confirmed".
-                // This avoid the issue where the transaction returns null
-                // sometimes even though the signature is finalized.
                 let res = st.rpc.get_transaction_with_config(
                     &Signature::from_str(&sg.signature).unwrap(),
                     RpcTransactionConfig {
                         encoding: Some(UiTransactionEncoding::Base64),
-                        commitment: Some(CommitmentConfig::confirmed()),
+                        commitment: Some(CommitmentConfig::finalized()),
                         max_supported_transaction_version: None,
                     },
                 );
