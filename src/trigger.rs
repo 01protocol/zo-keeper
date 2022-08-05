@@ -61,7 +61,7 @@ fn load_buf<T>(buf: &[u8]) -> Option<T>
 where
     T: Copy + bytemuck::Pod + Discriminator,
 {
-    match buf[..8] == T::discriminator() {
+    match buf.len() >= 8 && buf[..8] == T::discriminator() {
         true => bytemuck::try_from_bytes(&buf[8..]).ok().copied(),
         false => None,
     }
