@@ -362,33 +362,31 @@ fn get_mf(
     let total_unrealized_pnl: I80F48 = unrealized_pnl.iter().sum();
 
     for i in 0..(MAX_COLLATERALS + MAX_MARKETS) {
+        let mut current_position = position[i];
+
+        if i == 0 {
+            let pnl = safe_add_i80f48(total_realized_pnl, total_unrealized_pnl);
+            current_position = safe_add_i80f48(
+                current_position,
+                safe_div_i80f48(pnl, prices[i]),
+            );
+        }
+
         let weight = weight_conversion(
             mf,
-            &position[i],
+            &current_position,
             &base_weight[i],
             i < MAX_COLLATERALS,
         );
         let weighted_price = safe_mul_i80f48(prices[i], weight);
 
-        if i == 0 {
-            mf_value = safe_add_i80f48(
-                mf_value,
-                safe_mul_i80f48(total_realized_pnl, weight), // Already in big at t=T
-            );
-        }
-
         mf_value = safe_add_i80f48(
             mf_value,
-            safe_mul_i80f48(position[i], weighted_price),
+            safe_mul_i80f48(current_position, weighted_price),
         );
     }
-    let pos_unrealized = match mf {
-        MfReturnOption::Mf => total_unrealized_pnl,
-        MfReturnOption::Omf => total_unrealized_pnl.min(I80F48::ZERO),
-        _ => I80F48::ZERO,
-    };
 
-    mf_value + pos_unrealized
+    mf_value
 }
 
 fn get_mf_wrapped(

@@ -44,3 +44,8 @@ pub fn safe_mul_i80f48(a: I80F48, b: I80F48) -> I80F48 {
     let c = a.checked_mul(b).ok_or(MathFailure);
     c.unwrap()
 }
+
+pub fn safe_div_i80f48(a: I80F48, b: I80F48) -> I80F48 {
+    let c = a.checked_div(b).ok_or(MathFailure);
+    c.unwrap()
+}
