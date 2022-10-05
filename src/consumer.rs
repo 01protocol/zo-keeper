@@ -165,14 +165,6 @@ fn consume(
     std::thread::spawn(move || {
         let _g = span.enter();
         consume_events(st, &market, limit, &control_accounts, &orders_accounts);
-
-        let mid = control_accounts.len() / 2;
-        let controls = control_accounts.split_at(mid);
-        let orders = orders_accounts.split_at(mid);
-        let margins = margin_accounts.split_at(mid);
-
-        crank_pnl(st, &market, &controls.0, &orders.0, &margins.0);
-        crank_pnl(st, &market, &controls.1, &orders.1, &margins.1);
     });
 
     *last_head = events_header.head;
@@ -225,41 +217,6 @@ fn consume_events(
         Err(e) => {
             let e = Error::from(e);
             warn!("consume_events: {}", e);
-        }
-    }
-}
-
-fn crank_pnl(
-    st: &AppState,
-    market: &zo_abi::dex::ZoDexMarket,
-    control_accounts: &[AccountMeta],
-    orders_accounts: &[AccountMeta],
-    margin_accounts: &[AccountMeta],
-) {
-    let program = st.program();
-    let req = program
-        .request()
-        .args(zo_abi::instruction::CrankPnl)
-        .accounts(zo_abi::accounts::CrankPnl {
-            state: st.zo_state_pubkey,
-            state_signer: st.zo_state_signer_pubkey,
-            cache: st.zo_cache_pubkey,
-            dex_program: zo_abi::ZO_DEX_PID,
-            market: market.own_address,
-        });
-
-    let res = control_accounts
-        .iter()
-        .chain(orders_accounts.iter())
-        .chain(margin_accounts.iter())
-        .fold(req, |r, x| r.accounts(x.clone()))
-        .send();
-
-    match res {
-        Ok(sg) => info!("crank_pnl: {}", sg),
-        Err(e) => {
-            let e = Error::from(e);
-            warn!("crank_pnl: {}", e);
         }
     }
 }
